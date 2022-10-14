@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Main where
 
 import Validation
@@ -15,7 +16,7 @@ import qualified Language.Wasm.Validate as WASM
 import Debug.Trace
 
 main :: IO ()
-main = getArgs >>= \args -> case args of
+main = getArgs >>= \case
   ["bin", fp] -> runBin fp
   ["txt", fp] -> runTxt fp
   _    -> usage
@@ -55,13 +56,13 @@ analyze m = sequenceA_
   ]
 
 analyzeFunctions :: [Function] -> V ()
-analyzeFunctions fs = sequenceA_ (map analyzeFunction fs)
+analyzeFunctions = traverse_ analyzeFunction
 
 analyzeFunction :: Function -> V ()
 analyzeFunction (Function _ _ b) = analyzeInstructions b
 
 analyzeInstructions :: [Instruction a] -> V ()
-analyzeInstructions xs = sequenceA_ (map analyzeInstruction xs)
+analyzeInstructions = traverse_ analyzeInstruction
 
 analyzeInstruction :: Instruction a -> V ()
 analyzeInstruction i = case i of
@@ -105,7 +106,7 @@ analyzeFRelop relop = badFPOp $ case relop of
   FGe -> ">="
 
 analyzeGlobals :: [Global] -> V ()
-analyzeGlobals gs = sequenceA_ (map analyzeGlobal gs)
+analyzeGlobals = traverse_ analyzeGlobal
 
 analyzeGlobal :: Global -> V ()
 analyzeGlobal (Global t b) = sequenceA_

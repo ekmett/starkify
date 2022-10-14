@@ -1,4 +1,3 @@
-{-# LANGUAGE TupleSections #-}
 module Validation where
 
 import Control.Monad.Except
@@ -36,10 +35,9 @@ instance Semigroup e => Applicative (Validation e) where
           (Right f, Right x) -> (Right (f x), i'')
 
 instance Semigroup e => Monad (Validation e) where
-  return = Validation . return
   Validation m >>= f = Validation $ ExceptT $ StateT $ \i ->
     case runState (runExceptT m) i of
-      (Left e, i') -> Identity $ (Left e, i')
+      (Left e, i') -> Identity (Left e, i')
       (Right a, i') -> Identity $ runState (runExceptT . getV $ f a) i'
 
 bad :: e -> Validation [e] a
