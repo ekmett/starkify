@@ -19,9 +19,9 @@ toMASM :: W.Module -> V M.Module
 toMASM m = do
   -- TODO: don't throw away main's type, we might want to check it? and locals? they're probably going to be the inputs...?
   (W.Function _mainty _mainlcls mainInstrs, funs) <- splitMain
-  M.Module <$> pure ["std::sys"]
-           <*> fmap catMaybes (traverse fun2MASM (Map.toList funs))
-           <*> (fmap (M.Program . (++ stackCleanUp 1)) $ translateInstrs mainInstrs)
+  M.Module ["std::sys"] <$>
+           fmap catMaybes (traverse fun2MASM (Map.toList funs))
+           <*> (M.Program . (++ stackCleanUp 1) <$> translateInstrs mainInstrs)
     -- TODO: 1 because we assume 1 output for now, determine this from main's signature instead?
 
   where functionsMap :: Map Text W.Function

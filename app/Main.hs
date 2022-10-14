@@ -115,6 +115,6 @@ analyzeGlobal (Global t b) = sequenceA_
   ]
 
 analyzeGlobalType :: GlobalType -> V ()
-analyzeGlobalType t = case t of
+analyzeGlobalType = \case
   Mut valuet -> badGlobalMut valuet
   _ -> pure ()
