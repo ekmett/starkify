@@ -41,7 +41,7 @@ data Instruction
   deriving Show
 
 ppMASM :: Module -> String
-ppMASM modl = unlines (ppModule modl)
+ppMASM = unlines . ppModule
 
   where ppModule m = map (("use."++) . unpack) (moduleImports m)
                   ++ concatMap ppProc (moduleProcs m)

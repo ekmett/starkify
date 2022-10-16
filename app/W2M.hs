@@ -58,9 +58,9 @@ toMASM m = do
         fun2MASM (_fname, W.Function _         _         []) = return Nothing
         fun2MASM (fname, W.Function _funTyIdx localsTys body) = do
           let nactuallocals = length localsTys
-              nargs = case Map.lookup fname functionTypesMap of
-                Nothing -> 0
-                Just (W.FuncType args _ret) -> length args
+              nargs = Map.findWithDefault 0 fname
+                . fmap (length . W.params)
+                $ functionTypesMap
               nlocals = nactuallocals + nargs
               -- the function starts by populating the first nargs local vars
               -- with the topmost nargs values on the stack, removing them from
@@ -69,7 +69,7 @@ toMASM m = do
               -- being pushed last and therefore popped first.
               prelude = reverse $ concat
                 [ [ M.Drop, M.LocStore (fromIntegral k) ]
-                | k <- [0..(nargs-1)]
+                | k <- [0..nargs-1]
                 ]
               -- TODO: figure out how the wasm lib parses 'call $foo (bar) (baz)'
               --       since it "linearizes" this into pushing bar, baz and calling foo,

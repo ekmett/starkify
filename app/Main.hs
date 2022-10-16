@@ -65,7 +65,7 @@ analyzeInstructions :: [Instruction a] -> V ()
 analyzeInstructions = traverse_ analyzeInstruction
 
 analyzeInstruction :: Instruction a -> V ()
-analyzeInstruction i = case i of
+analyzeInstruction = \case
   Block _ b -> analyzeInstructions b
   Loop _ b -> analyzeInstructions b
   If _ t f -> analyzeInstructions (t ++ f)
