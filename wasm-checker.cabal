@@ -19,7 +19,8 @@ executable wasm-checker
                       containers,
                       mtl,
                       text,
-                      wasm
+                      wasm,
+                      compactable
     hs-source-dirs:   app
     ghc-options:      -Wall
     default-language: Haskell2010

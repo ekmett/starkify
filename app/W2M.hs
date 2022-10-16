@@ -1,5 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 module W2M where
+
+import Control.Monad
+import Control.Functor.Compactable
 
 import Data.Maybe (catMaybes)
 import Data.Map (Map)
@@ -78,24 +82,21 @@ toMASM m = do
           return $ Just (M.Proc fname nlocals (prelude ++ instrs))
 
         translateInstrs :: W.Expression -> V [M.Instruction]
-        translateInstrs [] = pure []
+        translateInstrs = traverseMaybe translateInstr
 
-        translateInstrs (W.Call i : is) = case Map.lookup (fromIntegral i) functionNamesMap of
+        translateInstr :: _ -> V (Maybe M.Instruction)
+        translateInstr (W.Call i) = case Map.lookup (fromIntegral i) functionNamesMap of
           Nothing -> badWasmFunctionCallIdx (fromIntegral i)
-          Just fname -> if Set.member fname emptyFunctions
-              then translateInstrs is
-              else (M.Exec fname :) <$> translateInstrs is
-
-        translateInstrs (W.I32Const w32 : is) = (M.Push w32 :) <$> translateInstrs is
-        translateInstrs (W.GetLocal k : is) = (M.LocLoad (fromIntegral k) :) <$> translateInstrs is
-        translateInstrs (W.SetLocal k : is) = (M.LocStore (fromIntegral k) :) <$> translateInstrs is
-        translateInstrs (W.IBinOp bitsz op : is) = 
-          (:) <$> translateIBinOp bitsz op <*> translateInstrs is
-        translateInstrs (W.I32Eqz : is) = (M.EqConst 0 :) <$> translateInstrs is
-        translateInstrs (W.IRelOp bitsz op : is) = 
-          (:) <$> translateIRelOp bitsz op <*> translateInstrs is
-        translateInstrs (i:_is) = unsupportedInstruction i
-
+          Just fname | fname `Set.notMember` emptyFunctions ->
+            (pure.pure) (M.Exec fname)
+          Just _ -> pure Nothing
+        translateInstr (W.I32Const w32) = (pure.pure) (M.Push w32)
+        translateInstr (W.GetLocal k) =  (pure.pure) (M.LocLoad (fromIntegral k))
+        translateInstr (W.SetLocal k) =  (pure.pure) (M.LocStore (fromIntegral k))
+        translateInstr (W.IBinOp bitsz op) = fmap pure (translateIBinOp bitsz op)
+        translateInstr W.I32Eqz = (pure.pure) (M.EqConst 0)
+        translateInstr (W.IRelOp bitsz op) = fmap pure (translateIRelOp bitsz op)
+        translateInstr i = unsupportedInstruction i
 
         translateIBinOp :: W.BitSize -> W.IBinOp -> V M.Instruction
         translateIBinOp W.BS64 op = unsupported64Bits op

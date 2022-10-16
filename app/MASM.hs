@@ -24,6 +24,8 @@ newtype Program = Program { programInstrs :: [Instruction] }
 
 -- TODO: support whole-word and 8 bits variant of operations that support both.
 -- TODO: float "emulation"? ratios, fixed precision, continued fractions, any other relevant construction...
+
+-- TODO(Matthias): perhaps annotate stack effect?
 data Instruction
   = Exec ProcName -- exec.foo
   | Push Word32   -- push.n
