@@ -1,9 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE OverloadedLists #-}
 module MASM where
 
+import Control.Monad.Writer.Strict
+
+import qualified Data.DList as DList
+import Data.Foldable
 import Data.Text.Lazy (Text, unpack)
 import Data.Typeable
 import Data.Word
+import Data.String
+import qualified GHC.Exts
 import GHC.Generics
 
 type ProcName = Text
@@ -51,19 +58,37 @@ data Instruction
   | IfTrue { thenBranch:: [Instruction], elseBranch:: [Instruction] }
   deriving (Eq, Ord, Show, Generic, Typeable)
 
+newtype PpMASM a = PpMASM {runPpMASM :: Writer (DList.DList String) a}
+  deriving (Generic, Typeable, Functor, Applicative, Monad)
+
+deriving instance MonadWriter (DList.DList String) PpMASM
+
+instance (a~()) => IsString (PpMASM a) where
+  fromString s = tell [s]
+
+instance (a~()) => GHC.Exts.IsList (PpMASM a) where
+  type Item (PpMASM a) = String
+  fromList = tell . DList.fromList
+
+
+indent :: PpMASM a -> PpMASM a
+indent = censor (fmap ("  "++))
+
 ppMASM :: Module -> String
-ppMASM = unlines . ppModule
-
-  where ppModule m = map (("use."++) . unpack) (moduleImports m)
-                  ++ concatMap ppProc (moduleProcs m)
-                  ++ ppProgram (moduleProg m)
-
-        ppProc p = [ "proc." ++ unpack (procName p) ++ "." ++ show (procNLocals p) ]
-                ++ concatMap (map ("  "++) . ppInstr) (procInstrs p)
-                ++ [ "end" ]
-        ppProgram p = [ "begin" ]
-                   ++ concatMap (map ("  "++) . ppInstr) (programInstrs p)
-                   ++ [ "end" ]
+ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
+  where ppModule m = do
+          tell $ DList.fromList $ fmap (("use."++) . unpack) (moduleImports m)
+          traverse_ ppProc (moduleProcs m)
+          ppProgram (moduleProg m)
+        ppProc p = do
+          [ "proc." ++ unpack (procName p) ++ "." ++ show (procNLocals p) ]
+          indent $ traverse_ ppInstr (procInstrs p)
+          "end"
+        ppProgram p = do
+          "begin"
+          indent $ traverse_ ppInstr (programInstrs p)
+          "end"
+        ppInstr :: Instruction -> PpMASM ()
         ppInstr (Exec pname) = [ "exec." ++ unpack pname ]
         ppInstr (Push n) = [ "push." ++ show n ]
         ppInstr (LocStore n) = [ "loc_store." ++ show n ]
@@ -83,12 +108,12 @@ ppMASM = unlines . ppModule
         ppInstr And = [ "u32checked_and" ]
         ppInstr Or = [ "u32checked_or" ]
         ppInstr Xor = [ "u32checked_xor" ]
-        ppInstr (IfTrue thenBranch elseBranch) =
-          "if.true" :
-            concatMap (map ("  "++) . ppInstr) thenBranch ++
-          "else" :
-            concatMap (map ("  "++) . ppInstr) elseBranch ++
-          ["end"]
+        ppInstr (IfTrue thenBranch elseBranch) = do
+          "if.true"
+          indent $ traverse_ ppInstr thenBranch
+          "else"
+          indent $ traverse_ ppInstr elseBranch
+          "end"
 
 mod1 :: Module
 mod1 = Module

@@ -21,7 +21,8 @@ executable wasm-checker
                       text,
                       wasm,
                       compactable,
-                      pretty-simple
+                      pretty-simple,
+                      dlist
     hs-source-dirs:   app
     ghc-options:      -Wall
     default-language: Haskell2010
@@ -31,4 +32,10 @@ executable wasm-checker
         TupleSections,
         PartialTypeSignatures,
         ImportQualifiedPost,
-        DeriveGeneric
+        DeriveGeneric,
+        FlexibleInstances,
+        GeneralizedNewtypeDeriving,
+        StandaloneDeriving,
+        MultiParamTypeClasses,
+        FlexibleContexts,
+        TypeFamilies
