@@ -2,7 +2,9 @@
 module MASM where
 
 import Data.Text.Lazy (Text, unpack)
+import Data.Typeable
 import Data.Word
+import GHC.Generics
 
 type ProcName = Text
 
@@ -13,14 +15,17 @@ data Module = Module
   , moduleProcs :: [Proc]
   , moduleProg  :: Program
   }
+  deriving (Eq, Ord, Show, Generic, Typeable)
 
 data Proc = Proc
   { procName    :: ProcName
   , procNLocals :: Int
   , procInstrs  :: [Instruction]
   }
+  deriving (Eq, Ord, Show, Generic, Typeable)
 
 newtype Program = Program { programInstrs :: [Instruction] }
+  deriving (Eq, Ord, Show, Generic, Typeable)
 
 -- TODO: support whole-word and 8 bits variant of operations that support both.
 -- TODO: float "emulation"? ratios, fixed precision, continued fractions, any other relevant construction...
@@ -40,7 +45,7 @@ data Instruction
   | And | Or | Xor -- u32checked_{and, or, xor}
   | EqConst Word32 | Eq | Neq -- u32checked_{eq.n, eq, neq}
   | Lt | Gt -- u32checked_{lt, gt}
-  deriving Show
+  deriving (Eq, Ord, Show, Generic, Typeable)
 
 ppMASM :: Module -> String
 ppMASM = unlines . ppModule
