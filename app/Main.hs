@@ -36,7 +36,10 @@ run fp dec = do
   case r of
     Left e -> error $ "Decoding error: " ++ show e
     Right wasm_mod -> do
-      masm_mod <- runValidation (standardValidator wasm_mod >> traceShow wasm_mod (analyze wasm_mod) >> toMASM wasm_mod)
+      masm_mod <- runValidation $ do
+            standardValidator wasm_mod
+            traceShow wasm_mod (analyze wasm_mod)
+            toMASM wasm_mod
       putStrLn (ppMASM masm_mod)
 
   where standardValidator wasm_mod = do
