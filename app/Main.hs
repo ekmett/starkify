@@ -112,10 +112,9 @@ analyzeGlobals :: [Global] -> V ()
 analyzeGlobals = traverse_ analyzeGlobal
 
 analyzeGlobal :: Global -> V ()
-analyzeGlobal (Global t b) = sequenceA_
-  [ analyzeGlobalType t
-  , analyzeInstructions b
-  ]
+analyzeGlobal (Global t b) = do
+  analyzeGlobalType t
+  analyzeInstructions b
 
 analyzeGlobalType :: GlobalType -> V ()
 analyzeGlobalType = \case
