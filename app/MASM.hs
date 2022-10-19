@@ -45,6 +45,10 @@ data Instruction
   | And | Or | Xor -- u32checked_{and, or, xor}
   | EqConst Word32 | Eq | Neq -- u32checked_{eq.n, eq, neq}
   | Lt | Gt -- u32checked_{lt, gt}
+  -- https://maticnetwork.github.io/miden/user_docs/assembly/flow_control.html#conditional-execution
+  -- Not sure if there's also an if.false?
+  -- if.true
+  | IfTrue { thenBranch:: [Instruction], elseBranch:: [Instruction] }
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 ppMASM :: Module -> String
@@ -79,6 +83,12 @@ ppMASM = unlines . ppModule
         ppInstr And = [ "u32checked_and" ]
         ppInstr Or = [ "u32checked_or" ]
         ppInstr Xor = [ "u32checked_xor" ]
+        ppInstr (IfTrue thenBranch elseBranch) =
+          "if.true" :
+            concatMap (map ("  "++) . ppInstr) thenBranch ++
+          "else" :
+            concatMap (map ("  "++) . ppInstr) elseBranch ++
+          ["end"]
 
 mod1 :: Module
 mod1 = Module

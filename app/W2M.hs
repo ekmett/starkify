@@ -96,6 +96,8 @@ toMASM m = do
         translateInstr (W.IBinOp bitsz op) = fmap pure (translateIBinOp bitsz op)
         translateInstr W.I32Eqz = (pure.pure) (M.EqConst 0)
         translateInstr (W.IRelOp bitsz op) = fmap pure (translateIRelOp bitsz op)
+        translateInstr W.Select = (pure.pure) $
+          M.IfTrue [M.Drop] [M.Swap 1, M.Drop]
         translateInstr i = unsupportedInstruction i
 
         translateIBinOp :: W.BitSize -> W.IBinOp -> V M.Instruction
