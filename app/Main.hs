@@ -6,6 +6,7 @@ import MASM (ppMASM)
 import W2M
 
 import Data.Foldable
+import Debug.Pretty.Simple
 import Language.Wasm
 import Language.Wasm.Structure
 import System.Environment
@@ -13,7 +14,6 @@ import System.Environment
 import qualified Data.ByteString.Lazy as LBS
 import qualified Language.Wasm.Validate as WASM
 
-import Debug.Trace
 
 main :: IO ()
 main = getArgs >>= \case
@@ -38,7 +38,7 @@ run fp dec = do
     Right wasm_mod -> do
       masm_mod <- runValidation $ do
             standardValidator wasm_mod
-            traceShow wasm_mod (analyze wasm_mod)
+            pTraceShow wasm_mod (analyze wasm_mod)
             toMASM wasm_mod
       putStrLn (ppMASM masm_mod)
 
