@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedLists #-}
 module Validation where
 
 import Control.Monad.Validate
@@ -29,7 +28,7 @@ nextId :: (Semigroup e) => Validation e Id
 nextId = state $ \i -> (i, i+1)
 
 bad :: e -> Validation (DList.DList e) a
-bad e = refute [e]
+bad = refute . pure
 
 data VError
   = FPOperation String
