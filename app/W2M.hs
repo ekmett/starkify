@@ -98,12 +98,15 @@ toMASM m = do
         translateInstr (W.IRelOp bitsz op) = fmap pure (translateIRelOp bitsz op)
         translateInstr W.Select = (pure.pure) $
           M.IfTrue [M.Drop] [M.Swap 1, M.Drop]
+        translateInstr (W.GetGlobal w32) = (pure.pure) (M.MemLoad $ fromIntegral w32)
+        translateInstr (W.SetGlobal w32) = (pure.pure) (M.MemStore $ fromIntegral w32)
         translateInstr i = unsupportedInstruction i
 
         translateIBinOp :: W.BitSize -> W.IBinOp -> V M.Instruction
         translateIBinOp W.BS64 op = unsupported64Bits op
         translateIBinOp W.BS32 op = case op of
           W.IAdd  -> return M.IAdd
+          W.ISub  -> return M.ISub
           W.IMul  -> return M.IMul
           W.IShl  -> return M.ShL
           W.IShrS -> return M.ShR

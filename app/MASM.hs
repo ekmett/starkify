@@ -40,22 +40,30 @@ newtype Program = Program { programInstrs :: [Instruction] }
 -- TODO(Matthias): perhaps annotate stack effect?
 data Instruction
   = Exec ProcName -- exec.foo
+  -- https://maticnetwork.github.io/miden/user_docs/assembly/flow_control.html#conditional-execution
+  -- Not sure if there's also an if.false?
+  -- if.true
+  | IfTrue { thenBranch:: [Instruction], elseBranch:: [Instruction] }
+
   | Push Word32   -- push.n
-  | LocStore Word32  -- loc_store.i
-  | LocLoad Word32 -- loc_load.i
   | Swap Word32 -- swap[.i]
   | Drop -- drop
+
+  | LocStore Word32  -- loc_store.i
+  | LocLoad Word32 -- loc_load.i
+  | MemLoad Word32 -- mem_load.a
+  -- | MemLoadStack -- mem_load
+  | MemStore Word32 -- mem_store.a
+  -- | MemStoreStack -- mem_store
+
   | TruncateStack -- exec.sys::truncate_stack
   | IAdd -- u32checked_add
+  | ISub -- "u32checked_sub"
   | IMul -- u32checked_mul
   | ShL | ShR -- u32checked_{shl, shr}
   | And | Or | Xor -- u32checked_{and, or, xor}
   | EqConst Word32 | Eq | Neq -- u32checked_{eq.n, eq, neq}
   | Lt | Gt -- u32checked_{lt, gt}
-  -- https://maticnetwork.github.io/miden/user_docs/assembly/flow_control.html#conditional-execution
-  -- Not sure if there's also an if.false?
-  -- if.true
-  | IfTrue { thenBranch:: [Instruction], elseBranch:: [Instruction] }
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 newtype PpMASM a = PpMASM {runPpMASM :: Writer (DList.DList String) a}
@@ -90,13 +98,25 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
           "end"
         ppInstr :: Instruction -> PpMASM ()
         ppInstr (Exec pname) = [ "exec." ++ unpack pname ]
-        ppInstr (Push n) = [ "push." ++ show n ]
+        ppInstr (IfTrue thenBranch elseBranch) = do
+          "if.true"
+          indent $ traverse_ ppInstr thenBranch
+          "else"
+          indent $ traverse_ ppInstr elseBranch
+          "end"
+
         ppInstr (LocStore n) = [ "loc_store." ++ show n ]
         ppInstr (LocLoad n) = [ "loc_load." ++ show n ]
+        ppInstr (MemStore n) = [ "mem_store." ++ show n ]
+        ppInstr (MemLoad n) = [ "mem_load." ++ show n ]
+
+        ppInstr (Push n) = [ "push." ++ show n ]
         ppInstr (Swap n) = [ "swap" ++ if n == 1 then "" else "." ++ show n ]
         ppInstr Drop = [ "drop" ]
         ppInstr TruncateStack = [ "exec.sys::truncate_stack" ]
+
         ppInstr IAdd = [ "u32checked_add"  ]
+        ppInstr ISub = [ "u32checked_sub"  ]
         ppInstr IMul = [ "u32checked_mul" ]
         ppInstr ShL = [ "u32checked_shl" ]
         ppInstr ShR = [ "u32checked_shr" ]
@@ -108,13 +128,6 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr And = [ "u32checked_and" ]
         ppInstr Or = [ "u32checked_or" ]
         ppInstr Xor = [ "u32checked_xor" ]
-        ppInstr (IfTrue thenBranch elseBranch) = do
-          "if.true"
-          indent $ traverse_ ppInstr thenBranch
-          "else"
-          indent $ traverse_ ppInstr elseBranch
-          "end"
-
 mod1 :: Module
 mod1 = Module
   { moduleImports = [ "std::sys" ]
