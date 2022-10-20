@@ -1,13 +1,12 @@
 {-# LANGUAGE OverloadedLists #-}
 module Validation where
 
-import Control.Monad.Except
+import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
 import qualified Data.DList as DList
 import Data.Typeable
 import GHC.Natural
-import qualified GHC.Exts
 import GHC.Generics
 
 import Language.Wasm.Structure
@@ -17,11 +16,11 @@ import qualified Language.Wasm.Validate  as WASM
 
 type Id = Int
 
-newtype Validation e a = Validation { getV :: ExceptT e (RWS () () Id) a }
-  deriving (Generic, Typeable, Functor) -- , Applicative, Monad)
+newtype Validation e a = Validation { getV :: ValidateT e (RWS () () Id) a }
+  deriving (Generic, Typeable, Functor, Applicative, Monad)
 
 deriving instance (Semigroup e) => MonadState Id (Validation e)
-deriving instance (Semigroup e) => MonadError e (Validation e)
+deriving instance (Semigroup e) => MonadValidate e (Validation e)
 
 id0 :: Id
 id0 = 0
@@ -29,25 +28,8 @@ id0 = 0
 nextId :: (Semigroup e) => Validation e Id
 nextId = state $ \i -> (i, i+1)
 
-instance Semigroup e => Applicative (Validation e) where
-  pure a = Validation (pure a)
-  Validation ef <*> Validation ex = Validation $ ExceptT $ rws $ \_ i ->
-    case runRWS (runExceptT ef) () i of
-      (res_f, i', _) -> case runRWS (runExceptT ex) () i' of
-        (res_x, i'', _) -> case (res_f, res_x) of
-          (Left e , Left e') -> (Left (e <> e'), i'', ())
-          (Left e , _      ) -> (Left e, i'', ())
-          (_      , Left e') -> (Left e', i'', ())
-          (Right f, Right x) -> (Right (f x), i'', ())
-
-instance Semigroup e => Monad (Validation e) where
-  Validation m >>= f = Validation $ ExceptT $ rws $ \_ i ->
-    case runRWS (runExceptT m) () i of
-      (Left e, i', _) -> (Left e, i', ())
-      (Right a, i', _) -> runRWS (runExceptT . getV $ f a) () i'
-
 bad :: e -> Validation (DList.DList e) a
-bad e = Validation $ ExceptT $ rws $ \_ s -> (Left [e], s, ())
+bad e = refute [e]
 
 data VError
   = FPOperation String
@@ -98,7 +80,7 @@ ppErr (Unsupported64Bits opstr) = "a 64 bits operation (" ++ opstr ++ ")"
 type V = Validation (DList.DList VError)
 
 runValidation :: V a -> IO a
-runValidation (Validation e) = case runRWS (runExceptT e) () id0 of
+runValidation (Validation e) = case runRWS (runValidateT e) () id0 of
   (Left errs, _i, _w) -> error . unlines $
     "found: " : fmap (\err -> " - " ++ ppErr err) (DList.toList errs)
   (Right a, _i, _w) -> return a
