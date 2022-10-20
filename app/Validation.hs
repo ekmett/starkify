@@ -1,8 +1,10 @@
+{-# LANGUAGE OverloadedLists #-}
 module Validation where
 
 import Control.Monad.Except
 import Control.Monad.State
 import Control.Monad.RWS.Strict
+import qualified Data.DList as DList
 import Data.Typeable
 import GHC.Natural
 import qualified GHC.Exts
@@ -44,7 +46,7 @@ instance Semigroup e => Monad (Validation e) where
       (Left e, i', _) -> (Left e, i', ())
       (Right a, i', _) -> runRWS (runExceptT . getV $ f a) () i'
 
-bad :: e -> Validation [e] a
+bad :: e -> Validation (DList.DList e) a
 bad e = Validation $ ExceptT $ rws $ \_ s -> (Left [e], s, ())
 
 data VError
@@ -93,10 +95,10 @@ ppErr (WasmFunctionCallIdx i) = "an invalid index in function call: " ++ show i
 ppErr (UnsupportedInstruction i) = "an unsupported WASM instruction: " ++ show i
 ppErr (Unsupported64Bits opstr) = "a 64 bits operation (" ++ opstr ++ ")"
 
-type V = Validation [VError]
+type V = Validation (DList.DList VError)
 
 runValidation :: V a -> IO a
 runValidation (Validation e) = case runRWS (runExceptT e) () id0 of
   (Left errs, _i, _w) -> error . unlines $
-    "found: " : map (\err -> " - " ++ ppErr err) errs
+    "found: " : fmap (\err -> " - " ++ ppErr err) (DList.toList errs)
   (Right a, _i, _w) -> return a
