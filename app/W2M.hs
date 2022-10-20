@@ -103,8 +103,8 @@ toMASM m = do
         translateInstr i = unsupportedInstruction i
 
         translateIBinOp :: W.BitSize -> W.IBinOp -> V M.Instruction
-        translateIBinOp W.BS64 op = unsupported64Bits op
-        translateIBinOp W.BS32 op = case op of
+        translateIBinOp W.BS64 = unsupported64Bits
+        translateIBinOp W.BS32 = \case
           W.IAdd  -> return M.IAdd
           W.ISub  -> return M.ISub
           W.IMul  -> return M.IMul
@@ -113,7 +113,7 @@ toMASM m = do
           W.IAnd  -> return M.And
           W.IOr   -> return M.Or
           W.IXor  -> return M.Xor
-          _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
+          op      -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
         translateIRelOp :: W.BitSize -> W.IRelOp -> V M.Instruction
         translateIRelOp W.BS64 op = unsupported64Bits op
