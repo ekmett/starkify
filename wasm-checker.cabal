@@ -38,4 +38,6 @@ executable wasm-checker
         StandaloneDeriving,
         MultiParamTypeClasses,
         FlexibleContexts,
-        TypeFamilies
+        TypeFamilies,
+        NamedFieldPuns,
+        DisambiguateRecordFields

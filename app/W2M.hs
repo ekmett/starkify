@@ -99,7 +99,20 @@ toMASM m = do
         translateInstr W.Select = (pure.pure) $
           M.IfTrue [M.Drop] [M.Swap 1, M.Drop]
         translateInstr (W.GetGlobal w32) = (pure.pure) (M.MemLoad $ fromIntegral w32)
-        translateInstr (W.SetGlobal w32) = (pure.pure) (M.MemStore $ fromIntegral w32)
+        translateInstr (W.SetGlobal w32) = pure.pure $
+          M.MemStore (fromIntegral w32)
+        translateInstr (W.I32Store W.MemArg {offset}) = (pure.pure) $
+          -- TODO(Matthias): this is not generally true. Fix.
+          -- Implement wrap-around behaviour.
+          -- TODO: also assert somehing about alignment and offset?
+          M.MemStore (fromIntegral offset)
+
+        translateInstr (W.I32Load W.MemArg {offset}) = (pure.pure) $
+          -- TODO(Matthias): this is not generally true. Fix.
+          -- Implement wrap-around behaviour.
+          -- TODO: also assert somehing about alignment and offset?
+          M.MemLoad (fromIntegral offset)
+
         translateInstr i = unsupportedInstruction i
 
         translateIBinOp :: W.BitSize -> W.IBinOp -> V M.Instruction
