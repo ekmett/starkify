@@ -3,7 +3,6 @@
 module W2M where
 
 import Control.Monad
-import Control.Functor.Compactable
 
 import Data.Maybe (catMaybes)
 import Data.Map (Map)
@@ -82,7 +81,7 @@ toMASM m = do
           return $ Just (M.Proc fname nlocals (prelude ++ instrs))
 
         translateInstrs :: W.Expression -> V [M.Instruction]
-        translateInstrs = traverseMaybe translateInstr
+        translateInstrs = fmap catMaybes . traverse translateInstr
 
         translateInstr :: _ -> V (Maybe M.Instruction)
         translateInstr (W.Call i) = case Map.lookup (fromIntegral i) functionNamesMap of

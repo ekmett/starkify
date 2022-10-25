@@ -34,7 +34,7 @@ in
 mkShell {
   name = "wasm-checker";
   buildInputs = [
-    cabal-install haskell.compiler.ghc8107
+    cabal-install haskell.compiler.ghc924
     wabt
     rust162 cargo miden
   ] ++ llvmPkgs;
