@@ -1,0 +1,43 @@
+cabal-version:      2.4
+name:               wasm-checker
+version:            0.1.0.0
+-- synopsis:
+-- description:
+-- bug-reports:
+-- license:
+-- author:
+maintainer:         alpmestan@gmail.com
+-- copyright:
+-- category:
+extra-source-files: CHANGELOG.md
+
+executable wasm-checker
+    main-is:          Main.hs
+    other-modules:    MASM, Validation, W2M
+    build-depends:    base >=4.13 && <5,
+                      bytestring,
+                      containers,
+                      mtl,
+                      text,
+                      wasm,
+                      pretty-simple,
+                      dlist,
+                      monad-validate
+    hs-source-dirs:   app
+    ghc-options:      -Wall
+    default-language: Haskell2010
+    default-extensions:
+        ApplicativeDo,
+        LambdaCase,
+        TupleSections,
+        PartialTypeSignatures,
+        ImportQualifiedPost,
+        DeriveGeneric,
+        FlexibleInstances,
+        GeneralizedNewtypeDeriving,
+        StandaloneDeriving,
+        MultiParamTypeClasses,
+        FlexibleContexts,
+        TypeFamilies,
+        NamedFieldPuns,
+        DisambiguateRecordFields
