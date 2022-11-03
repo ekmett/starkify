@@ -13,7 +13,7 @@ extra-source-files: CHANGELOG.md
 
 executable wasm-checker
     main-is:          Main.hs
-    other-modules:    MASM, Validation, W2M
+    other-modules:    MASM, Validation, W2M, Count
     build-depends:    base >=4.13 && <5,
                       bytestring,
                       containers,
