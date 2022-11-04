@@ -4,6 +4,7 @@ module Main where
 import Validation
 import MASM (ppMASM)
 import W2M
+import Count
 
 import Data.Foldable
 import Debug.Pretty.Simple
@@ -19,6 +20,7 @@ main :: IO ()
 main = getArgs >>= \case
   ["bin", fp] -> runBin fp
   ["txt", fp] -> runTxt fp
+  ["count", fp] -> runCount fp
   _    -> usage
 
 usage :: IO ()
