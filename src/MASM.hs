@@ -1,3 +1,7 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLists #-}
 module MASM where
@@ -48,22 +52,27 @@ data Instruction
   | Push Word32   -- push.n
   | Swap Word32 -- swap[.i]
   | Drop -- drop
+  | Dup Word32 -- dup.n
+  | TruncateStack -- exec.sys::truncate_stack
 
   | LocStore Word32  -- loc_store.i
   | LocLoad Word32 -- loc_load.i
-  | MemLoad Word32 -- mem_load.a
+  | MemLoad (Maybe Word32) -- mem_load[.i]
+  | MemStore (Maybe Word32) -- mem_store[.i]
   -- | MemLoadStack -- mem_load
-  | MemStore Word32 -- mem_store.a
   -- | MemStoreStack -- mem_store
 
-  | TruncateStack -- exec.sys::truncate_stack
   | IAdd -- u32checked_add
   | ISub -- "u32checked_sub"
   | IMul -- u32checked_mul
+  | IDiv -- u32checked_div
   | ShL | ShR -- u32checked_{shl, shr}
   | And | Or | Xor -- u32checked_{and, or, xor}
   | EqConst Word32 | Eq | Neq -- u32checked_{eq.n, eq, neq}
   | Lt | Gt -- u32checked_{lt, gt}
+
+  -- "faked 64 bits" operations
+  | IAdd64 | IMul64
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 newtype PpMASM a = PpMASM {runPpMASM :: Writer (DList.DList String) a}
@@ -77,6 +86,7 @@ instance (a~()) => IsString (PpMASM a) where
 instance (a~()) => GHC.Exts.IsList (PpMASM a) where
   type Item (PpMASM a) = String
   fromList = tell . DList.fromList
+  toList = DList.toList . snd . runWriter . runPpMASM
 
 
 indent :: PpMASM a -> PpMASM a
@@ -107,17 +117,17 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
 
         ppInstr (LocStore n) = [ "loc_store." ++ show n ]
         ppInstr (LocLoad n) = [ "loc_load." ++ show n ]
-        ppInstr (MemStore n) = [ "mem_store." ++ show n ]
-        ppInstr (MemLoad n) = [ "mem_load." ++ show n ]
 
         ppInstr (Push n) = [ "push." ++ show n ]
         ppInstr (Swap n) = [ "swap" ++ if n == 1 then "" else "." ++ show n ]
         ppInstr Drop = [ "drop" ]
+        ppInstr (Dup n) = [ "dup." ++ show n ]
         ppInstr TruncateStack = [ "exec.sys::truncate_stack" ]
 
-        ppInstr IAdd = [ "u32checked_add"  ]
-        ppInstr ISub = [ "u32checked_sub"  ]
+        ppInstr IAdd = [ "u32checked_add" ]
+        ppInstr ISub = [ "u32checked_sub" ]
         ppInstr IMul = [ "u32checked_mul" ]
+        ppInstr IDiv = [ "u32checked_div" ]
         ppInstr ShL = [ "u32checked_shl" ]
         ppInstr ShR = [ "u32checked_shr" ]
         ppInstr (EqConst k) = [ "u32checked_eq." ++ show k ]
@@ -128,6 +138,18 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr And = [ "u32checked_and" ]
         ppInstr Or = [ "u32checked_or" ]
         ppInstr Xor = [ "u32checked_xor" ]
+
+        ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
+        ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
+        ppInstr (IfTrue thenB elseB) = do
+          "if.true"
+          indent $ traverse_ ppInstr thenB
+          "else"
+          indent $ traverse_ ppInstr elseB
+          "end"
+        ppInstr IAdd64 = [ "exec.u64::checked_add" ]
+        ppInstr IMul64 = [ "exec.u64::checked_mul" ]
+
 mod1 :: Module
 mod1 = Module
   { moduleImports = [ "std::sys" ]

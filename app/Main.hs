@@ -14,7 +14,8 @@ import System.Environment
 
 import qualified Data.ByteString.Lazy as LBS
 import qualified Language.Wasm.Validate as WASM
-
+import Eval (simulateMASM, simulateWASM)
+import System.IO
 
 main :: IO ()
 main = getArgs >>= \case
@@ -40,9 +41,19 @@ run fp dec = do
     Right wasm_mod -> do
       masm_mod <- runValidation $ do
             standardValidator wasm_mod
-            pTraceShow wasm_mod (analyze wasm_mod)
+            analyze wasm_mod -- ppTraceShow wasm_mod ...
             toMASM wasm_mod
       putStrLn (ppMASM masm_mod)
+      -- hPutStrLn stderr (ppMASM masm_mod)
+      mres <- simulateWASM wasm_mod
+      hPutStrLn stderr "---------------------------"
+      hPutStrLn stderr ">>> WASM program evaluated."
+      hPutStrLn stderr (show mres)
+      let (masmStack, masmMem) = simulateMASM masm_mod
+      hPutStrLn stderr "---------------------------"
+      hPutStrLn stderr ">>> MASM program evaluated."
+      hPutStrLn stderr (show masmStack)
+      hPutStrLn stderr (show masmMem)
 
   where standardValidator wasm_mod = do
           case WASM.validate wasm_mod of
