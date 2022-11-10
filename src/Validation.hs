@@ -38,6 +38,8 @@ data VError
   | WasmFunctionCallIdx Int
   | UnsupportedInstruction (WASM.Instruction Natural)
   | Unsupported64Bits String
+  | UnsupportedMemAlign Natural
+  | NoMultipleMem
   deriving Show
 
 badFPOp :: String -> V a
@@ -48,6 +50,9 @@ badGlobalMut t = bad (GlobalMut t)
 
 badNoMain :: V a
 badNoMain = bad NoMain
+
+badNoMultipleMem :: V a
+badNoMultipleMem = bad NoMultipleMem
 
 failsStandardValidation :: WASM.ValidationError -> V a
 failsStandardValidation e = bad (StdValidation e)
@@ -60,6 +65,9 @@ unsupportedInstruction i = bad (UnsupportedInstruction i)
 
 unsupported64Bits :: Show op => op -> V a
 unsupported64Bits op = bad (Unsupported64Bits $ show op)
+
+unsupportedMemAlign :: Natural -> V a
+unsupportedMemAlign alig = bad (UnsupportedMemAlign alig)
 
 ppErr :: VError -> String
 ppErr (FPOperation op) = "a floating point operation: " ++ op
@@ -75,6 +83,8 @@ ppErr (StdValidation e) = "a standard validator issue: " ++ show e
 ppErr (WasmFunctionCallIdx i) = "an invalid index in function call: " ++ show i
 ppErr (UnsupportedInstruction i) = "an unsupported WASM instruction: " ++ show i
 ppErr (Unsupported64Bits opstr) = "a 64 bits operation (" ++ opstr ++ ")"
+ppErr (UnsupportedMemAlign a) = "an unsupported alignment: " ++ show a
+ppErr NoMultipleMem = "a need for multiple memories"
 
 type V = Validation (DList.DList VError)
 
