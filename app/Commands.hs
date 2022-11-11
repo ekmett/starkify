@@ -30,7 +30,7 @@ runCommand (Verify verifyOpts) = runVerify verifyOpts
 ---------------
 
 runBuild :: BuildOpts -> IO ()
-runBuild BuildOpts {..} = withWasm buildInFile $ \wasmFile wasmMod -> do
+runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ withWasm buildInFile $ \wasmFile wasmMod -> do
   when dumpWasm $ case wasmFile of
     DotWat fp -> dumpFile "WASM code" fp
     DotWasm fp -> withWatFromWasm fp $ \watFP ->
@@ -52,6 +52,8 @@ runBuild BuildOpts {..} = withWasm buildInFile $ \wasmFile wasmMod -> do
 
   when dumpMasm $
     dumpFile "MASM code" buildOutMasmFile
+
+  dump ("Compilation done: " ++ buildOutMasmFile)
 
   when brunToo $
     runRun $
@@ -102,7 +104,7 @@ runRun RunOpts {..} = do
       stack <- getStack out
       putStrLn $
         unlines
-          [ "Successfullt generated proof " ++ proof,
+          [ "Successfully generated proof " ++ proof,
             "Output of the program stored in " ++ out,
             "Program hash: " ++ hash,
             "Final state of the stack:",
@@ -216,6 +218,11 @@ withWasm ::
 withWasm fp operation = case takeExtension fp of
   ".c" -> withWasmFromC fp operation
   ".wat" -> withWasmFromWat fp operation
+  ".wasm" -> do
+    wasmCode <- LBS.readFile fp
+    case Wasm.decodeLazy wasmCode of
+      Left err -> error ("couldn't parse binary WASM from " ++ fp ++ ": " ++ err)
+      Right wasmMod -> operation (DotWasm fp) wasmMod
   _ -> error ("cannot handle file: " ++ fp ++ ", only .c and .wat are supported")
 
 ---------------

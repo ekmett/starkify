@@ -160,6 +160,7 @@ toMASM m = do
                 foldl' (\(addrs, cnt) (k, ty) -> case ty of
                            W.I32 -> (Map.insert k [cnt] addrs, cnt+1)
                            W.I64 -> (Map.insert k [cnt, cnt+1] addrs, cnt+2)
+                           _     -> error $ "localAddrMap: floating point local var?"
                        )
                        (Map.empty, 0)
                        (zip [0..] (wasm_args ++ wasm_locals))
@@ -172,6 +173,7 @@ toMASM m = do
               prelude = reverse $ concat 
                 [ case Map.lookup (fromIntegral k) localAddrMap of
                     Just is -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
+                    _ -> error ("impossible: prelude of procedure " ++ show fname ++ ", local variable " ++ show k ++ " not found?!")
                 | k <- [0..(length wasm_args - 1)]
                 ]
           instrs <- translateInstrs localAddrMap body
@@ -179,7 +181,7 @@ toMASM m = do
 
 
         translateInstrs :: Map Natural [Word32] -> W.Expression -> V [M.Instruction]
-        translateInstrs m = concatMapA (translateInstr m)
+        translateInstrs locals = concatMapA (translateInstr locals)
 
         translateInstr :: Map Natural [Word32] -> W.Instruction Natural -> V [M.Instruction]
         translateInstr _ (W.Call i) = case Map.lookup (fromIntegral i) functionNamesMap of
@@ -218,6 +220,8 @@ toMASM m = do
           _ -> unsupportedMemAlign align
         translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
           Just is -> pure (map M.LocLoad is)
+          _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
+
         translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
           Just is -> pure $ concat 
             [ [ M.LocStore i
@@ -225,6 +229,7 @@ toMASM m = do
               ]
             | i <- reverse is
             ]
+          _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
         translateInstr localAddrs (W.TeeLocal k) =
           translateInstrs localAddrs [W.SetLocal k, W.GetLocal k]
 

@@ -60,7 +60,7 @@ buildOpts = BuildOpts
             ( long "input"
            <> short 'i'
            <> metavar "FILE"
-           <> help "path to .c or .wat (textual WASM) input file to compile"
+           <> help "path to .c, .wasm (binary WASM) or .wat (textual WASM) input file to compile"
             )
         <*> strOption
             ( long "output"
@@ -84,7 +84,7 @@ buildOpts = BuildOpts
             )
         <*> switch
             ( long "dump-masm-ast"
-           <> help "dump textual WASM code"
+           <> help "dump the Haskell structures representing the MASM syntax tree"
             )
         <*> switch
             ( long "run"
