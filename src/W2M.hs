@@ -1,12 +1,9 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PartialTypeSignatures #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 
 module W2M where
-
-import Control.Monad
 
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
@@ -20,9 +17,6 @@ import Data.Text.Lazy (Text, replace)
 import Data.Vector.Unboxed (Vector)
 import Data.Vector.Unboxed qualified as V
 import Data.Word (Word8, Word32)
-
-import Debug.Trace
-
 import GHC.Natural (Natural)
 import Language.Wasm.Structure qualified as W
 
@@ -88,7 +82,7 @@ toMASM m = do
         getDatasInit = concat <$> traverse getDataInit (W.datas m)
         
         getDataInit :: W.DataSegment -> V [M.Instruction]
-        getDataInit d@(W.DataSegment 0 offset_wexpr bytes) = do
+        getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
           offset_mexpr <- translateInstrs mempty offset_wexpr
           pure $ offset_mexpr ++
                  [ M.Push 4, M.IDiv             -- [offset_bytes/4, ...]

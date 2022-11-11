@@ -4,35 +4,20 @@ set -e
 
 cprog=$1
 
+echo "Building starkify..."
+cabal build exe:starkify
+
 echo "Source: $cprog"
 echo "--- C program ---"
 cat testfiles/$cprog
 echo "-----------------"
 echo ""
 
-wasmout="/tmp/$cprog.wasm"
-
-echo "Running clang (C -> WASM) ..."
-clang-14 --target=wasm32 --no-standard-libraries -O1 -o $wasmout testfiles/$cprog \
-	  -Wl,--no-entry -Wl,--export-all -Wl,--strip-all
-echo ""
-
-echo "WASM IR: $wasmout"
-echo "--- WASM ---"
-wasm2wat -f $wasmout
-echo "------------"
-echo ""
-
-echo "Building starkify..."
-cabal build exe:wasm-checker
 masmout="/tmp/$cprog.masm"
 echo "Running starkify..."
-$(cabal list-bin exe:wasm-checker) bin $wasmout > $masmout
-
-echo "MASM IR: $masmout"
-echo "--- MASM ---"
-cat $masmout
-echo "------------"
+$(cabal list-bin exe:starkify) build \
+	-i testfiles/$cprog -o $masmout \
+	--dump-wasm --dump-masm
 
 compile_cmd="miden compile --assembly $masmout"
 echo "[info] Compiling Miden Assembly: $compile_cmd ..."
