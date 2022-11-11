@@ -7,12 +7,10 @@ import Options
 import Validation
 import W2M
 
-import Control.Exception
 import Control.Monad
 import Data.List (isPrefixOf)
 import Data.Word
 import GHC.Generics
-import System.Directory
 import System.Exit
 import System.FilePath
 import System.IO
@@ -138,13 +136,15 @@ withCompiledC
  :: FilePath -- path to .c file
  -> (FilePath -> IO a) -- what to do with .wasm file
  -> IO a
-withCompiledC dotc f = do
-    wasmPath <- writeSystemTempFile (takeFileName dotc <.> "wasm") ""
-    (do (ex, clangout, clangerr) <- readProcessWithExitCode "clang-14" (clangOpts ++ ["-o", wasmPath, dotc]) ""
-        case ex of
-            ExitSuccess -> f wasmPath
-            ExitFailure e -> error $ "clang failed: " ++ show (e, clangout, clangerr)
-      ) `finally` removeFile wasmPath
+withCompiledC dotc operation = do
+    withSystemTempDirectory "withCompiledC" $ \dir  -> do
+      let wasmPath = dir </> takeFileName dotc <.> "wasm"
+      (ex, clangout, clangerr) <- readProcessWithExitCode "clang-14"
+        (clangOpts ++ ["-o", wasmPath, dotc]) ""
+      case ex of
+              ExitSuccess -> operation wasmPath
+              ExitFailure e -> error $
+                "clang failed: " ++ show (e, clangout, clangerr)
 
     where clangOpts = [ "--target=wasm32"
                       , "--no-standard-libraries"
@@ -156,33 +156,37 @@ withWatFromWasm
   :: FilePath -- path to .wasm file
   -> (FilePath -> IO a) -- what to do with .wat file
   -> IO a
-withWatFromWasm wasmFile f = do
-    watPath <- writeSystemTempFile (takeFileName wasmFile <.> "wat") ""
-    (do (ex, wasmout, wasmerr) <- readProcessWithExitCode "wasm2wat" [wasmFile, "-o", watPath] ""
-        case ex of
-            ExitSuccess -> f watPath
-            ExitFailure e -> error $ "wasm2wat failed: " ++ show (e, wasmout, wasmerr)
-      ) `finally` removeFile watPath
+withWatFromWasm wasmFile operation = do
+    withSystemTempDirectory "withWatFromWasm" $ \dir  -> do
+      let watPath = dir </> takeFileName wasmFile <.> "wat"
+      (ex, wasmout, wasmerr) <- readProcessWithExitCode "wasm2wat"
+        [wasmFile, "-o", watPath] ""
+      case ex of
+            ExitSuccess -> operation watPath
+            ExitFailure e ->
+              error $ "wasm2wat failed: " ++ show (e, wasmout, wasmerr)
 
 withWasmFromWat
   :: FilePath -- path to .wat file
   -> (WasmFile -> Wasm.Module -> IO a)
   -> IO a
-withWasmFromWat watFile f = do
+withWasmFromWat watFile operation = do
   watCode <- LBS.readFile watFile
   case Wasm.parse watCode of
-    Left err -> error ("couldn't parse textual WASM from " ++ watFile ++ ": " ++ show err)
-    Right wasmMod -> f (DotWat watFile) wasmMod
+    Left err -> error
+      ("couldn't parse textual WASM from " ++ watFile ++ ": " ++ show err)
+    Right wasmMod -> operation (DotWat watFile) wasmMod
 
 withWasmFromC
   :: FilePath -- path to .c file
   -> (WasmFile -> Wasm.Module -> IO a)
   -> IO a
-withWasmFromC dotc f = withCompiledC dotc $ \wasmFile -> do
+withWasmFromC dotc operation = withCompiledC dotc $ \wasmFile -> do
     wasmCode <- LBS.readFile wasmFile
     case Wasm.decodeLazy wasmCode of
-        Left err -> error ("couldn't parse binary WASM from " ++ wasmFile ++ ": " ++ err)
-        Right wasmMod -> f (DotWasm wasmFile) wasmMod
+        Left err -> error
+          ("couldn't parse binary WASM from " ++ wasmFile ++ ": " ++ err)
+        Right wasmMod -> operation (DotWasm wasmFile) wasmMod
 
 data WasmFile = DotWasm FilePath | DotWat FilePath
   deriving Show
@@ -191,9 +195,9 @@ withWasm
   :: FilePath -- .wat or .c file
   -> (WasmFile -> Wasm.Module -> IO a)
   -> IO a
-withWasm fp f
-  | takeExtension fp == ".c"   = withWasmFromC fp f
-  | takeExtension fp == ".wat" = withWasmFromWat fp f
+withWasm fp operation
+  | takeExtension fp == ".c"   = withWasmFromC fp operation
+  | takeExtension fp == ".wat" = withWasmFromWat fp operation
   | otherwise = error ("cannot handle file: " ++ fp ++ ", only .c and .wat are supported")
 
 ---------------
