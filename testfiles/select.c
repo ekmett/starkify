@@ -1,4 +1,4 @@
-__attribute__((noinline)) int f(int i)
+__attribute__((noinline)) unsigned int f(unsigned int i)
 {
   if (i == 2)
     return 3;
@@ -6,4 +6,4 @@ __attribute__((noinline)) int f(int i)
     return 4;
 }
 
-int main() { return f(2) + f(5); }
+unsigned int main() { return f(2) + f(5); }

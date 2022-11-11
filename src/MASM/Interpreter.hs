@@ -55,16 +55,16 @@ interpret m = go (programInstrs $ moduleProg m) stack0 mem0
         go (ISub : is) (b:a:xs) mem = go is ((a-b):xs) mem
         go (IMul : is) (b:a:xs) mem = go is ((a*b):xs) mem
         go (IDiv : is) (b:a:xs) mem = go is ((a`div`b):xs) mem
-        go (ShL : is) (b:a:xs) mem = go is ((shiftL a (fromIntegral b)):xs) mem
-        go (ShR : is) (b:a:xs) mem = go is ((shiftR a (fromIntegral b)):xs) mem
-        go (And : is) (b:a:xs) mem = go is ((a .&. b):xs) mem
-        go (Or : is) (b:a:xs) mem = go is ((a .|. b):xs) mem
-        go (Xor : is) (b:a:xs) mem = go is ((a `xor` b):xs) mem
-        go (EqConst w : is) (a:xs) mem = go is ((if a == w then 1 else 0):xs) mem
-        go (Eq : is) (b:a:xs) mem = go is ((if a == b then 1 else 0):xs) mem
-        go (Neq : is) (b:a:xs) mem = go is ((if a /= b then 1 else 0):xs) mem
-        go (Lt : is) (b:a:xs) mem = go is ((if a < b then 1 else 0):xs) mem
-        go (Gt : is) (b:a:xs) mem = go is ((if a > b then 1 else 0):xs) mem
+        go (IShL : is) (b:a:xs) mem = go is ((shiftL a (fromIntegral b)):xs) mem
+        go (IShR : is) (b:a:xs) mem = go is ((shiftR a (fromIntegral b)):xs) mem
+        go (IAnd : is) (b:a:xs) mem = go is ((a .&. b):xs) mem
+        go (IOr : is) (b:a:xs) mem = go is ((a .|. b):xs) mem
+        go (IXor : is) (b:a:xs) mem = go is ((a `xor` b):xs) mem
+        go (IEq Nothing : is) (b:a:xs) mem = go is ((if a == b then 1 else 0):xs) mem
+        go (IEq (Just c) : is) (a:xs) mem = go is ((if a == c then 1 else 0):xs) mem
+        go (INeq : is) (b:a:xs) mem = go is ((if a /= b then 1 else 0):xs) mem
+        go (ILt : is) (b:a:xs) mem = go is ((if a < b then 1 else 0):xs) mem
+        go (IGt : is) (b:a:xs) mem = go is ((if a > b then 1 else 0):xs) mem
         go (TruncateStack : is) st mem = go is st mem
         go (Exec procedure : is) st mem = case findProc procedure of
             -- check nlocals & stack compatibility?

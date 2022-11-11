@@ -189,7 +189,7 @@ toMASM m = do
           Just _ -> pure []
         translateInstr _ (W.I32Const w32) = (pure.pure) (M.Push w32)
         translateInstr _ (W.IBinOp bitsz op) = fmap pure (translateIBinOp bitsz op)
-        translateInstr _ W.I32Eqz = (pure.pure) (M.EqConst 0)
+        translateInstr _ W.I32Eqz = (pure.pure) (M.IEq (Just 0))
         translateInstr _ (W.IRelOp bitsz op) = fmap pure (translateIRelOp bitsz op)
         translateInstr _ W.Select = (pure.pure) $
           M.IfTrue [M.Drop] [M.Swap 1, M.Drop]
@@ -294,6 +294,7 @@ toMASM m = do
         -- Since an i64 'x' on the stack is in Miden represented as [x_hi, x_lo], pushing 0
         -- effectively grabs the i32 for the low bits and sets the high 32 bits to 0.
         translateInstr _ W.I64ExtendSI32 = (pure.pure) (M.Push 0)
+        translateInstr _ W.I64Eqz = (pure.pure) M.IEqz64
 
         translateInstr _ i = unsupportedInstruction i
 
@@ -301,27 +302,37 @@ toMASM m = do
         -- TODO: the u64 module actually provides implementations of many binops for 64 bits
         -- values.
         translateIBinOp W.BS64 op = case op of
-          W.IAdd  -> return M.IAdd64
-          W.IMul  -> return M.IMul64
-          _       -> unsupported64Bits op
+          W.IAdd -> return M.IAdd64
+          W.ISub -> return M.ISub64
+          W.IMul -> return M.IMul64
+          _      -> unsupported64Bits op
         translateIBinOp W.BS32 op = case op of
           W.IAdd  -> return M.IAdd
           W.ISub  -> return M.ISub 
           W.IMul  -> return M.IMul
-          W.IShl  -> return M.ShL
-          W.IShrS -> return M.ShR
-          W.IAnd  -> return M.And
-          W.IOr   -> return M.Or
-          W.IXor  -> return M.Xor
-          op      -> unsupportedInstruction (W.IBinOp W.BS32 op)
+          W.IShl  -> return M.IShL
+          W.IShrU -> return M.IShR
+          W.IAnd  -> return M.IAnd
+          W.IOr   -> return M.IOr
+          W.IXor  -> return M.IXor
+          _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
         translateIRelOp :: W.BitSize -> W.IRelOp -> V M.Instruction
-        translateIRelOp W.BS64 op = unsupported64Bits op
+        translateIRelOp W.BS64 op = case op of
+          W.IEq  -> return M.IEq64
+          W.INe  -> return M.INeq64
+          W.ILtU -> return M.ILt64
+          W.IGtU -> return M.IGt64
+          W.ILeU -> return M.ILte64
+          W.IGeU -> return M.IGte64
+          _      -> unsupported64Bits op
         translateIRelOp W.BS32 op = case op of
-          W.IEq  -> return M.Eq
-          W.INe  -> return M.Neq
-          W.ILtS -> return M.Lt
-          W.IGtS -> return M.Gt
+          W.IEq  -> return (M.IEq Nothing)
+          W.INe  -> return M.INeq
+          W.ILtU -> return M.ILt
+          W.IGtU -> return M.IGt
+          W.ILeU -> return M.ILte
+          W.IGeU -> return M.IGte
           _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
 
         -- necessary because of https://github.com/maticnetwork/miden/issues/371
