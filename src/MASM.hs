@@ -141,12 +141,6 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
 
         ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
         ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
-        ppInstr (IfTrue thenB elseB) = do
-          "if.true"
-          indent $ traverse_ ppInstr thenB
-          "else"
-          indent $ traverse_ ppInstr elseB
-          "end"
         ppInstr IAdd64 = [ "exec.u64::checked_add" ]
         ppInstr IMul64 = [ "exec.u64::checked_mul" ]
 
