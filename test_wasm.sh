@@ -4,22 +4,13 @@ set -e
 
 wasmprog=$1
 
-echo "Source: $wasmprog"
-echo "--- WASM program ---"
-cat testfiles/$wasmprog
-echo "-----------------"
-echo ""
-
 echo "Building starkify..."
-cabal build exe:wasm-checker
+cabal build exe:starkify
+
 masmout="/tmp/$cprog.masm"
 echo "Running starkify..."
-$(cabal list-bin exe:wasm-checker) txt testfiles/$wasmprog > $masmout
-
-echo "MASM IR: $masmout"
-echo "--- MASM ---"
-cat $masmout
-echo "------------"
+$(cabal list-bin exe:starkify) build -i testfiles/$wasmprog -o $masmout \
+    --dump-wasm --dump-masm
 
 compile_cmd="miden compile --assembly $masmout"
 echo "[info] Compiling Miden Assembly: $compile_cmd ..."

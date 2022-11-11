@@ -1,5 +1,5 @@
 cabal-version:      2.4
-name:               wasm-checker
+name:               starkify
 version:            0.1.0.0
 -- synopsis:
 -- description:
@@ -52,16 +52,23 @@ library
         NamedFieldPuns,
         DisambiguateRecordFields
 
-executable wasm-checker
+executable starkify
     main-is:          Main.hs
-    build-depends:    base >=4.13 && <5,
+    other-modules:    Commands, Options
+    build-depends:    aeson,
+                      base >=4.13 && <5,
                       bytestring,
                       containers,
+                      directory,
+                      filepath,
                       mtl,
+                      optparse-applicative,
+                      process,
+                      starkify,
                       text,
+                      temporary,
                       vector,
                       wasm,
-                      wasm-checker,
                       pretty-simple,
                       dlist,
                       monad-validate
@@ -84,11 +91,11 @@ executable wasm-checker
         NamedFieldPuns,
         DisambiguateRecordFields
 
-test-suite wasm-testfiles
+test-suite starkify-testfiles
   type:                exitcode-stdio-1.0
   hs-source-dirs:      tests
   main-is:             TestFiles.hs
-  build-depends:       base, bytestring, directory, filepath, hspec, process, temporary, wasm, wasm-checker
+  build-depends:       base, bytestring, directory, filepath, hspec, process, starkify, temporary, wasm
   ghc-options:         -main-is TestFiles -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
   default-extensions:

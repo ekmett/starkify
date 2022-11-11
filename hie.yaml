@@ -1,3 +1,8 @@
 cradle:
   cabal:
-    component: "wasm-checker:exe:wasm-checker"
+    - path: "app/"
+      component: "starkify:exe:starkify"
+    - path: "src/"
+      component: "starkify:lib:starkify"
+    - path: "tests/"
+      component: "starkify:test:starkify"
