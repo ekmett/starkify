@@ -97,13 +97,13 @@ runRun RunOpts{..} = do
   where hashPrefix = "Proving program with hash "
 
         ok (out, proof, hash) = do
-          stk <- getStack out
+          stack <- getStack out
           putStrLn $ unlines
             [ "Successfullt generated proof " ++ proof
             , "Output of the program stored in " ++ out
             , "Program hash: " ++ hash
             , "Final state of the stack:"
-            , "\t" ++ show stk
+            , "\t" ++ show stack
             ]
 
 runVerify :: VerifyOpts -> IO ()
