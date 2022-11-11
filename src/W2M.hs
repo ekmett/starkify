@@ -5,9 +5,10 @@
 
 module W2M where
 
+import Control.Monad (when)
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
-import Data.List (foldl')
+import Data.Foldable
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, maybeToList)
@@ -22,9 +23,7 @@ import Language.Wasm.Structure qualified as W
 
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
-
 import Validation
-
 
 type WasmAddr = Int
 type MasmAddr = Word32
@@ -35,9 +34,10 @@ data Ty = TyInt32 | TyInt64
 funName :: Id -> String
 funName i = "fun" ++ show i
 
-toMASM :: W.Module -> V M.Module
-toMASM m = do
-  -- TODO: don't throw away main's type, we might want to check it? and locals? they're probably going to be the inputs...?
+toMASM :: Bool -> W.Module -> V M.Module
+toMASM checkImports m = do
+  -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
+  when checkImports $ checkImps (W.imports m)
   globalsInit <- getGlobalsInit
   datasInit <- getDatasInit
 
@@ -45,7 +45,17 @@ toMASM m = do
     <$> fmap catMaybes (traverse fun2MASM sortedFuns)
     <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec "main" ] ++ stackCleanUp))
 
-  where globalsAddrMap :: Vector MasmAddr
+  where checkImps xs
+          | checkImports = traverse_ (\(W.Import imodule iname idesc) -> badImport imodule iname $ descType idesc) xs
+          | otherwise    = return ()
+
+        descType idesc = case idesc of
+          W.ImportFunc _t -> "function"
+          W.ImportTable _t -> "table"
+          W.ImportMemory _l -> "memory"
+          W.ImportGlobal _g -> "global"
+
+        globalsAddrMap :: Vector MasmAddr
         memBeginning :: MasmAddr
         (globalsAddrMap, memBeginning) = (\(xs, n) -> (V.fromList xs, n)) $ foldl' f ([], 0) (W.globals m)
           where f (xs, n) globl_i =

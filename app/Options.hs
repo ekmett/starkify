@@ -14,6 +14,7 @@ data Command
 data BuildOpts = BuildOpts
   { buildInFile      :: FilePath
   , buildOutMasmFile :: FilePath
+  , checkImports     :: Bool
   , dumpWasm         :: Bool
   , dumpWasmAst      :: Bool
   , dumpMasm         :: Bool
@@ -67,6 +68,11 @@ buildOpts = BuildOpts
            <> short 'o'
            <> metavar "FILE"
            <> help "path to .masm output file"
+            )
+        <*> switch
+            ( long "check-imports"
+           <> short 'c'
+           <> help "whether to check if imports can be 'resolved' by starkify (they're ignored by default)"
             )
         <*> switch
             ( long "dump-wasm"

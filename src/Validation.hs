@@ -12,6 +12,7 @@ import Language.Wasm.Structure
 
 import qualified Language.Wasm.Structure as WASM
 import qualified Language.Wasm.Validate  as WASM
+import qualified Data.Text.Lazy as LT
 
 type Id = Int
 
@@ -40,6 +41,7 @@ data VError
   | Unsupported64Bits String
   | UnsupportedMemAlign Natural
   | NoMultipleMem
+  | UnsupportedImport LT.Text LT.Text LT.Text
   deriving Show
 
 badFPOp :: String -> V a
@@ -53,6 +55,9 @@ badNoMain = bad NoMain
 
 badNoMultipleMem :: V a
 badNoMultipleMem = bad NoMultipleMem
+
+badImport :: LT.Text -> LT.Text -> LT.Text -> V a
+badImport imodule iname idesc = bad (UnsupportedImport imodule iname idesc)
 
 failsStandardValidation :: WASM.ValidationError -> V a
 failsStandardValidation e = bad (StdValidation e)
@@ -85,6 +90,9 @@ ppErr (UnsupportedInstruction i) = "an unsupported WASM instruction: " ++ show i
 ppErr (Unsupported64Bits opstr) = "a 64 bits operation (" ++ opstr ++ ")"
 ppErr (UnsupportedMemAlign a) = "an unsupported alignment: " ++ show a
 ppErr NoMultipleMem = "a need for multiple memories"
+ppErr (UnsupportedImport imodule iname idesc) =
+  "an unsupported import: module=" ++ LT.unpack imodule ++
+  ", name=" ++ LT.unpack iname ++ " (" ++ LT.unpack idesc ++ ")"
 
 type V = Validation (DList.DList VError)
 

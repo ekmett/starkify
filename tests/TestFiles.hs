@@ -77,7 +77,7 @@ compareWasmMasmResult expectedOutFile wmod = do
     Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
     Just res -> return res
   mwasmres <- simulateWASM wmod
-  mmod <- runValidation (toMASM wmod)
+  mmod <- runValidation (toMASM True wmod)
   mmasmres <- runMiden mmod
   case (mwasmres, mmasmres) of
     (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks vals stack 0
@@ -99,7 +99,7 @@ compareWasmMasmResult expectedOutFile wmod = do
 
 genProofAndVerify :: Wasm.Module -> Expectation
 genProofAndVerify wmod = do
-  mmod <- runValidation (toMASM wmod)
+  mmod <- runValidation (toMASM True wmod)
   (midenOut, midenProof, midenProgHash) <- runMidenProve mmod
   verifRes <- runMidenVerify midenOut midenProof midenProgHash
   verifRes `shouldBe` Nothing

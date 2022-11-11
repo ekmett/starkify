@@ -41,7 +41,7 @@ runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ 
 
   masmMod <- runValidation $ do
     standardValidator wasmMod
-    toMASM wasmMod
+    toMASM checkImports wasmMod
 
   when dumpMasmAst $
     dumps "MASM AST" (lines . T.unpack $ pShow masmMod)
