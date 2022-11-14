@@ -5,7 +5,6 @@
 
 module W2M where
 
-import Control.Monad (when)
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
 import Data.Foldable
@@ -24,12 +23,13 @@ import Language.Wasm.Structure qualified as W
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
 import Validation
+import Control.Monad.Except
+import W2M.Stack
+import Control.Applicative
 
-type WasmAddr = Int
+type WasmAddr = Natural
 type MasmAddr = Word32
-
-data Ty = TyInt32 | TyInt64
-  deriving (Eq, Show)
+type LocalAddrs = Map WasmAddr (StackElem, [MasmAddr])
 
 funName :: Id -> String
 funName i = "fun" ++ show i
@@ -93,7 +93,7 @@ toMASM checkImports m = do
         
         getDataInit :: W.DataSegment -> V [M.Instruction]
         getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
-          offset_mexpr <- translateInstrs mempty offset_wexpr
+          offset_mexpr <- translateInstrs [] mempty offset_wexpr
           pure $ offset_mexpr ++
                  [ M.Push 4, M.IDiv             -- [offset_bytes/4, ...]
                  , M.Push memBeginning, M.IAdd  -- [offset_bytes/4+memBeginning, ...] =
@@ -122,13 +122,12 @@ toMASM checkImports m = do
 
         getGlobalInit :: (Int, W.Global) -> V [M.Instruction]
         getGlobalInit (k, g) = do
-          xs <- translateInstrs mempty (W.initializer g)
-          storeInstrs <- translateInstr mempty (W.SetGlobal $ fromIntegral k)
-          return (xs ++ storeInstrs)
+          xs <- translateInstrs [] mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
+          return xs
 
         getGlobalTy k = case t of
-            W.I32 -> TyInt32
-            W.I64 -> TyInt64
+            W.I32 -> SI32
+            W.I64 -> SI64
             _     -> error "unsupported global type"
 
           where t = case W.globalType (W.globals m !! fromIntegral k) of
@@ -165,11 +164,11 @@ toMASM checkImports m = do
           let wasm_args = maybe [] W.params (Map.lookup fname functionTypesMap)
               wasm_locals = localsTys
 
-              localAddrMap :: Map Natural [Word32]
+              localAddrMap :: LocalAddrs
               (localAddrMap, nlocalCells) =
                 foldl' (\(addrs, cnt) (k, ty) -> case ty of
-                           W.I32 -> (Map.insert k [cnt] addrs, cnt+1)
-                           W.I64 -> (Map.insert k [cnt, cnt+1] addrs, cnt+2)
+                           W.I32 -> (Map.insert k (SI32, [cnt]) addrs, cnt+1)
+                           W.I64 -> (Map.insert k (SI64, [cnt, cnt+1]) addrs, cnt+2)
                            _     -> error $ "localAddrMap: floating point local var?"
                        )
                        (Map.empty, 0)
@@ -182,125 +181,181 @@ toMASM checkImports m = do
 
               prelude = reverse $ concat 
                 [ case Map.lookup (fromIntegral k) localAddrMap of
-                    Just is -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
+                    Just (_t, is) -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
                     _ -> error ("impossible: prelude of procedure " ++ show fname ++ ", local variable " ++ show k ++ " not found?!")
                 | k <- [0..(length wasm_args - 1)]
                 ]
-          instrs <- translateInstrs localAddrMap body
+
+          argsStack <- checkTypes wasm_args
+          instrs <- translateInstrs argsStack localAddrMap body
           return $ Just (M.Proc fname (fromIntegral nlocalCells) (prelude ++ instrs))
 
 
-        translateInstrs :: Map Natural [Word32] -> W.Expression -> V [M.Instruction]
-        translateInstrs locals = concatMapA (translateInstr locals)
+        translateInstrs :: StackType -> LocalAddrs -> W.Expression -> V [M.Instruction]
+        translateInstrs stack0 locals wasmInstrs = do
+          -- we do this in two steps so that we can report e.g unsupported instructions
+          -- or calls to unexisting functions "applicatively" and add some additional sequential
+          -- reporting logic that tracks the type of the stack and allows 'translateInstr' to
+          -- inspect the stack to bail out if they're not right and otherwise
+          -- use the types of the stack values to drive the MASM code generation.
+          stackFuns <- traverse (translateInstr locals) wasmInstrs
+          case foldStackFuns stack0 stackFuns of
+            Left e -> badStackTypeError e
+            Right (a, _finalT) -> return (concat a)
 
-        translateInstr :: Map Natural [Word32] -> W.Instruction Natural -> V [M.Instruction]
-        translateInstr _ (W.Call i) = case Map.lookup (fromIntegral i) functionNamesMap of
+        translateInstr :: LocalAddrs -> W.Instruction Natural -> V (StackFun [M.Instruction])
+        translateInstr _ inst@(W.Call i) = case Map.lookup (fromIntegral i) functionNamesMap of
           Nothing -> badWasmFunctionCallIdx (fromIntegral i)
-          Just fname | fname `Set.notMember` emptyFunctions ->
-            (pure.pure) (M.Exec fname)
-          Just _ -> pure []
-        translateInstr _ (W.I32Const w32) = (pure.pure) (M.Push w32)
-        translateInstr _ (W.IBinOp bitsz op) = fmap pure (translateIBinOp bitsz op)
-        translateInstr _ W.I32Eqz = (pure.pure) (M.IEq (Just 0))
-        translateInstr _ (W.IRelOp bitsz op) = fmap pure (translateIRelOp bitsz op)
-        translateInstr _ W.Select = (pure.pure) $
-          M.IfTrue [M.Drop] [M.Swap 1, M.Drop]
-        translateInstr _ (W.I32Load (W.MemArg offset align)) = case align of
-          2 -> pure [ M.Push 4
-                    , M.IDiv
-                    , M.Push (fromIntegral offset `div` 4)
-                    , M.IAdd
-                    , M.Push memBeginning
-                    , M.IAdd
-                    , M.MemLoad Nothing
-                    ]
+          Just fname
+            | fname `Set.notMember` emptyFunctions ->
+                case Map.lookup fname functionTypesMap of
+                  Just (W.FuncType params res) -> do
+                    params' <- checkTypes params
+                    res' <- checkTypes res
+                    return $ assumingPrefix inst params' $ \t -> ([M.Exec fname], res' ++ t)
+                  Nothing -> badWasmFunctionCallIdx (fromIntegral i)
+
+            | otherwise -> pure (pure [])
+        translateInstr _ (W.I32Const w32) = pure $ noPrefix $ \t -> ([M.Push w32], SI32:t)
+        translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
+        translateInstr _ i@W.I32Eqz = pure $
+          assumingPrefix i [SI32] $ \t -> ([M.IEq (Just 0)], SI32:t)
+        translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
+        translateInstr _ i@W.Select = return $
+          assumingPrefix i [SI32, SI32, SI32] $ \t ->
+            ([M.IfTrue [M.Drop] [M.Swap 1, M.Drop]], SI32:t)
+        translateInstr _ i@(W.I32Load (W.MemArg offset align)) = case align of
+          2 -> pure $
+            assumingPrefix i [SI32] $ \t -> 
+                 ( [ M.Push 4
+                   , M.IDiv
+                   , M.Push (fromIntegral offset `div` 4)
+                   , M.IAdd
+                   , M.Push memBeginning
+                   , M.IAdd
+                   , M.MemLoad Nothing
+                   ]
+                 , SI32:t
+                 )
           _ -> unsupportedMemAlign align
-        translateInstr _ (W.I32Store (W.MemArg offset align)) = case align of
+        translateInstr _ i@(W.I32Store (W.MemArg offset align)) = case align of
           -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
-          2 -> pure [ M.Swap 1
-                    , M.Push 4
-                    , M.IDiv
-                    , M.Push (fromIntegral offset `div` 4)
-                    , M.IAdd
-                    , M.Push memBeginning
-                    , M.IAdd
-                    , M.MemStore Nothing
-                    , M.Drop
-                    ]
+          2 -> pure $ 
+            assumingPrefix i [SI32, SI32] $ \t ->
+                 ( [ M.Swap 1
+                   , M.Push 4
+                   , M.IDiv
+                   , M.Push (fromIntegral offset `div` 4)
+                   , M.IAdd
+                   , M.Push memBeginning
+                   , M.IAdd
+                   , M.MemStore Nothing
+                   , M.Drop
+                   ]
+                 , t
+                 )
           _ -> unsupportedMemAlign align
         translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
-          Just is -> pure (map M.LocLoad is)
+          Just (loct, is) -> pure $ noPrefix $ \t -> (map M.LocLoad is, loct:t)
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
 
-        translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
-          Just is -> pure $ concat 
-            [ [ M.LocStore i
-              , M.Drop
-              ]
-            | i <- reverse is
-            ]
+        translateInstr localAddrs i@(W.SetLocal k) = case Map.lookup k localAddrs of
+          Just (loct, as) -> pure $
+            assumingPrefix i [loct] $ \t -> 
+              ( concat
+                  [ [ M.LocStore a
+                    , M.Drop
+                    ]
+                  | a <- reverse as
+                  ]
+              , t
+              )
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
         translateInstr localAddrs (W.TeeLocal k) =
-          translateInstrs localAddrs [W.SetLocal k, W.GetLocal k]
+          liftA2 (++) <$> translateInstr localAddrs (W.SetLocal k)
+                      <*> translateInstr localAddrs (W.GetLocal k)
 
         translateInstr _ (W.GetGlobal k) = case getGlobalTy k of
-          TyInt32 -> (pure.pure) (M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k)
-          TyInt64 -> pure [ M.MemLoad . Just $ (globalsAddrMap V.! fromIntegral k)
-                          , M.MemLoad . Just $ (globalsAddrMap V.! fromIntegral k) + 1
-                          ]
-        translateInstr _ (W.SetGlobal k) = case getGlobalTy k of
-          TyInt32 -> pure [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k 
-                          , M.Drop
-                          ]
-          TyInt64 -> pure [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
-                          , M.Drop
-                          , M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k)
-                          , M.Drop
-                          ]
+          SI32 -> pure $ noPrefix $ \t ->
+            ( [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
+              ]
+            , SI32:t
+            )
+          SI64 -> pure $ noPrefix $ \t ->
+            ( [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
+              , M.MemLoad . Just $ (globalsAddrMap V.! fromIntegral k) + 1
+              ]
+            , SI64:t
+            )
+        translateInstr _ i@(W.SetGlobal k) = case getGlobalTy k of
+          SI32 -> pure $ assumingPrefix i [SI32] $ \t ->
+            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k 
+              , M.Drop
+              ]
+            , t
+            )
+          SI64 -> pure $ assumingPrefix i [SI64] $ \t -> 
+            ( [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
+              , M.Drop
+              , M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k)
+              , M.Drop
+              ]
+            , t
+            )
 
         -- https://maticnetwork.github.io/miden/user_docs/stdlib/math/u64.html
         -- 64 bits integers are emulated by separating the high and low 32 bits.
-        translateInstr _ (W.I64Const k) = pure
-          [ M.Push k_lo, M.Push k_hi ]
+        translateInstr _ (W.I64Const k) = pure $ noPrefix $ \t ->
+          ( [ M.Push k_lo
+            , M.Push k_hi
+            ]
+          , SI64:t
+          )
           where FakeW64 k_hi k_lo = toFakeW64 k
-        translateInstr _ (W.I64Load (W.MemArg offset align)) = case align of
+        translateInstr _ i@(W.I64Load (W.MemArg offset align)) = case align of
           -- we need to turn [byte_addr, ...] of wasm into
           -- [u32_addr, ...] for masm, and then call mem_load
           -- twice (once at u32_addr, once at u32_addr+1)
           -- to get hi and lo 32 bits of i64 value.
           --
           -- u32_addr = (byte_addr / 4) + (offset / 4) + memBeginning
-          3 -> pure [ M.Push 4, M.IDiv
-                    , M.Push (fromIntegral offset `div` 4)
-                    , M.IAdd
-                    , M.Push memBeginning, M.IAdd -- [addr, ...]
-                    , M.Dup 0 -- [addr, addr, ...]
-                    , M.MemLoad Nothing -- [lo, addr, ...]
-                    , M.Swap 1 -- [addr, lo, ...]
-                    , M.Push 1, M.IAdd -- [addr+1, lo, ...]
-                    , M.MemLoad Nothing -- [hi, lo, ...]
-                    ]
+          3 -> pure $ assumingPrefix i [SI32] $ \t ->
+            ( [ M.Push 4, M.IDiv
+              , M.Push (fromIntegral offset `div` 4)
+              , M.IAdd
+              , M.Push memBeginning, M.IAdd -- [addr, ...]
+              , M.Dup 0 -- [addr, addr, ...]
+              , M.MemLoad Nothing -- [lo, addr, ...]
+              , M.Swap 1 -- [addr, lo, ...]
+              , M.Push 1, M.IAdd -- [addr+1, lo, ...]
+              , M.MemLoad Nothing -- [hi, lo, ...]
+              ]
+            , SI64:t
+            )
           _ -> unsupportedMemAlign align
-        translateInstr _ (W.I64Store (W.MemArg offset align)) = case align of
+        translateInstr _ i@(W.I64Store (W.MemArg offset align)) = case align of
           -- we need to turn [val_hi, val_low, byte_addr, ...] of wasm into
           -- [u32_addr, val64_hi, val64_low, ...] for masm,
           -- and the call mem_store twice
           -- (once at u32_addr, once at u32_addr+1)
           -- to get hi and lo 32 bits of i64 value.
-          3 -> pure [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
-                    , M.Push 4, M.IDiv
-                    , M.Push (fromIntegral offset `div` 4)
-                    , M.IAdd
-                    , M.Push memBeginning
-                    , M.IAdd -- [addr, hi, lo, ...]
-                    , M.Dup 0 -- [addr, addr, hi, lo, ...]
-                    , M.Swap 2, M.Swap 1 -- [addr, hi, addr, lo, ...]
-                    , M.Push 1, M.IAdd -- [addr+1, hi, addr, lo, ...]
-                    , M.MemStore Nothing -- [hi, addr, lo, ...]
-                    , M.Drop -- [addr, lo, ...]
-                    , M.MemStore Nothing -- [lo, ...]
-                    , M.Drop -- [...]
-                    ]
+          3 -> pure $ assumingPrefix i [SI64, SI32] $ \t ->
+            ( [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
+              , M.Push 4, M.IDiv
+              , M.Push (fromIntegral offset `div` 4)
+              , M.IAdd
+              , M.Push memBeginning
+              , M.IAdd -- [addr, hi, lo, ...]
+              , M.Dup 0 -- [addr, addr, hi, lo, ...]
+              , M.Swap 2, M.Swap 1 -- [addr, hi, addr, lo, ...]
+              , M.Push 1, M.IAdd -- [addr+1, hi, addr, lo, ...]
+              , M.MemStore Nothing -- [hi, addr, lo, ...]
+              , M.Drop -- [addr, lo, ...]
+              , M.MemStore Nothing -- [lo, ...]
+              , M.Drop -- [...]
+              ]
+            , t
+            )
           _ -> unsupportedMemAlign align
 
         -- turning an i32 into an i64 in wasm corresponds to pushing 0 on the stack.
@@ -308,46 +363,54 @@ toMASM checkImports m = do
         -- and after like: [0, i, ...].
         -- Since an i64 'x' on the stack is in Miden represented as [x_hi, x_lo], pushing 0
         -- effectively grabs the i32 for the low bits and sets the high 32 bits to 0.
-        translateInstr _ W.I64ExtendSI32 = (pure.pure) (M.Push 0)
-        translateInstr _ W.I64Eqz = (pure.pure) M.IEqz64
+        translateInstr _ i@W.I64ExtendUI32 = pure $
+          assumingPrefix i [SI32] $ \t -> ([M.Push 0], SI64:t)
+        translateInstr _ i@W.I64Eqz = pure $
+          assumingPrefix i [SI64] $ \t -> ([M.IEqz64], SI32:t)
+        translateInstr _ W.Drop = pure $ withPrefix $ \ty ->
+          -- is the top of the WASM stack an i32 or i64, at this point in time?
+          -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
+          case ty of
+            SI32 -> return [M.Drop]
+            SI64 -> return [M.Drop, M.Drop]
 
         translateInstr _ i = unsupportedInstruction i
 
-        translateIBinOp :: W.BitSize -> W.IBinOp -> V M.Instruction
+        translateIBinOp :: W.BitSize -> W.IBinOp -> V (StackFun [M.Instruction])
         -- TODO: the u64 module actually provides implementations of many binops for 64 bits
         -- values.
         translateIBinOp W.BS64 op = case op of
-          W.IAdd -> return M.IAdd64
-          W.ISub -> return M.ISub64
-          W.IMul -> return M.IMul64
+          W.IAdd -> pure $ stackBinop op SI64 M.IAdd64
+          W.ISub -> pure $ stackBinop op SI64 M.ISub64
+          W.IMul -> pure $ stackBinop op SI64 M.IMul64
           _      -> unsupported64Bits op
         translateIBinOp W.BS32 op = case op of
-          W.IAdd  -> return M.IAdd
-          W.ISub  -> return M.ISub 
-          W.IMul  -> return M.IMul
-          W.IShl  -> return M.IShL
-          W.IShrU -> return M.IShR
-          W.IAnd  -> return M.IAnd
-          W.IOr   -> return M.IOr
-          W.IXor  -> return M.IXor
+          W.IAdd  -> pure $ stackBinop op SI32 M.IAdd
+          W.ISub  -> pure $ stackBinop op SI32 M.ISub 
+          W.IMul  -> pure $ stackBinop op SI32 M.IMul
+          W.IShl  -> pure $ stackBinop op SI32 M.IShL
+          W.IShrU -> pure $ stackBinop op SI32 M.IShR
+          W.IAnd  -> pure $ stackBinop op SI32 M.IAnd
+          W.IOr   -> pure $ stackBinop op SI32 M.IOr
+          W.IXor  -> pure $ stackBinop op SI32 M.IXor
           _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
-        translateIRelOp :: W.BitSize -> W.IRelOp -> V M.Instruction
+        translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [M.Instruction])
         translateIRelOp W.BS64 op = case op of
-          W.IEq  -> return M.IEq64
-          W.INe  -> return M.INeq64
-          W.ILtU -> return M.ILt64
-          W.IGtU -> return M.IGt64
-          W.ILeU -> return M.ILte64
-          W.IGeU -> return M.IGte64
+          W.IEq  -> pure $ stackRelop op SI64 M.IEq64
+          W.INe  -> pure $ stackRelop op SI64 M.INeq64
+          W.ILtU -> pure $ stackRelop op SI64 M.ILt64
+          W.IGtU -> pure $ stackRelop op SI64 M.IGt64
+          W.ILeU -> pure $ stackRelop op SI64 M.ILte64
+          W.IGeU -> pure $ stackRelop op SI64 M.IGte64
           _      -> unsupported64Bits op
         translateIRelOp W.BS32 op = case op of
-          W.IEq  -> return (M.IEq Nothing)
-          W.INe  -> return M.INeq
-          W.ILtU -> return M.ILt
-          W.IGtU -> return M.IGt
-          W.ILeU -> return M.ILte
-          W.IGeU -> return M.IGte
+          W.IEq  -> pure $ stackRelop op SI32 (M.IEq Nothing)
+          W.INe  -> pure $ stackRelop op SI32 M.INeq
+          W.ILtU -> pure $ stackRelop op SI32 M.ILt
+          W.IGtU -> pure $ stackRelop op SI32 M.IGt
+          W.ILeU -> pure $ stackRelop op SI32 M.ILte
+          W.IGeU -> pure $ stackRelop op SI32 M.IGte
           _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
 
         -- necessary because of https://github.com/maticnetwork/miden/issues/371
@@ -360,3 +423,28 @@ toMASM checkImports m = do
 
 concatMapA :: Applicative f => (a -> f [b]) -> [a] -> f [b]
 concatMapA f = fmap concat . traverse f
+
+checkTypes :: [W.ValueType] -> V [StackElem]
+checkTypes = traverse f
+  where f W.I32 = pure SI32
+        f W.I64 = pure SI64
+        f t     = unsupportedArgType t
+
+stackBinop :: W.IBinOp -> StackElem -> M.Instruction -> StackFun [M.Instruction]
+stackBinop op ty xs = assumingPrefix (W.IBinOp sz op) [ty, ty] $ \t -> ([xs], ty:t)
+  where sz = if ty == SI32 then W.BS32 else W.BS64
+stackRelop :: W.IRelOp -> StackElem -> M.Instruction -> StackFun [M.Instruction]
+stackRelop op ty xs = assumingPrefix (W.IRelOp sz op) [ty, ty] $ \t -> ([xs], SI32:t)
+  where sz = if ty == SI32 then W.BS32 else W.BS64
+
+{-
+  [ W.Instruction ]                                 W.Instruction
+V [ StackFun [M.Instruction] ]                   V (t -> ([M.Instruction], t))
+
+we can therefore abort early "enough" to keep the first step applicative, for any
+decision that doesn't require the type of the stack.
+
+and with an initial t supplied and a fold applied:
+V ([M.Instruction], t)
+
+-}

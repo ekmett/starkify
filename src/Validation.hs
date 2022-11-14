@@ -1,5 +1,7 @@
 module Validation where
 
+import W2M.Stack (StackProblem(..))
+
 import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
@@ -7,7 +9,6 @@ import qualified Data.DList as DList
 import Data.Typeable
 import GHC.Natural
 import GHC.Generics
-
 import Language.Wasm.Structure
 
 import qualified Language.Wasm.Structure as WASM
@@ -42,6 +43,8 @@ data VError
   | UnsupportedMemAlign Natural
   | NoMultipleMem
   | UnsupportedImport LT.Text LT.Text LT.Text
+  | WasmStackProblem StackProblem
+  | UnsupportedArgType WASM.ValueType
   deriving Show
 
 badFPOp :: String -> V a
@@ -74,6 +77,12 @@ unsupported64Bits op = bad (Unsupported64Bits $ show op)
 unsupportedMemAlign :: Natural -> V a
 unsupportedMemAlign alig = bad (UnsupportedMemAlign alig)
 
+badStackTypeError :: StackProblem -> V a
+badStackTypeError e = bad (WasmStackProblem e)
+
+unsupportedArgType :: WASM.ValueType -> V a
+unsupportedArgType t = bad (UnsupportedArgType t)
+
 ppErr :: VError -> String
 ppErr (FPOperation op) = "a floating point operation: " ++ op
 ppErr (GlobalMut t) = "a global mutable variable of type: " ++
@@ -93,6 +102,11 @@ ppErr NoMultipleMem = "a need for multiple memories"
 ppErr (UnsupportedImport imodule iname idesc) =
   "an unsupported import: module=" ++ LT.unpack imodule ++
   ", name=" ++ LT.unpack iname ++ " (" ++ LT.unpack idesc ++ ")"
+ppErr (WasmStackProblem (StackExpectedGot expected got i)) =
+  "a stack problem: instruction " ++ show i ++ " expected stack prefix " ++ show expected ++
+  " but got stack " ++ show (take (length expected) got)
+ppErr (UnsupportedArgType t) =
+  "an unsupported argument type: " ++ show t
 
 type V = Validation (DList.DList VError)
 

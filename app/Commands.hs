@@ -10,8 +10,8 @@ import Data.Text.Lazy qualified as T
 import Data.Word
 import GHC.Generics
 import Language.Wasm qualified as Wasm
-import MASM (ppMASM)
-import MASM.Miden (runMidenVerify)
+import MASM (ppMASM, Module)
+import MASM.Miden (runMidenVerify, runMiden)
 import Options
 import System.Exit
 import System.FilePath
@@ -21,15 +21,18 @@ import System.Process
 import Text.Pretty.Simple (pShow)
 import Validation
 import W2M
+import qualified Data.IntMap.Strict as IntMap
+import MASM.Interpreter (interpret, Mem (..))
 
 runCommand :: Command -> IO ()
-runCommand (Build buildOpts) = runBuild buildOpts
+runCommand (Build buildOpts) = runBuild buildOpts >> return ()
 runCommand (Run runOpts) = runRun runOpts
 runCommand (Verify verifyOpts) = runVerify verifyOpts
+runCommand (Interpret interpretOpts) = runInterpret interpretOpts
 
 ---------------
 
-runBuild :: BuildOpts -> IO ()
+runBuild :: BuildOpts -> IO Module
 runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ withWasm buildInFile $ \wasmFile wasmMod -> do
   when dumpWasm $ case wasmFile of
     DotWat fp -> dumpFile "WASM code" fp
@@ -63,6 +66,9 @@ runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ 
           runOutFile = buildOutMasmFile <.> "out",
           rverifyToo = bverifyToo
         }
+
+  return masmMod
+
   where
     standardValidator wasm_mod =
       case Wasm.validate wasm_mod of
@@ -122,6 +128,41 @@ runVerify VerifyOpts {..} = do
       dumps "miden verify stdout" (lines midenout)
       dumps "miden verify stderr" (lines midenerr)
       error "miden verify failed"
+
+runInterpret :: InterpretOpts -> IO ()
+runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp -> do
+   let masmFile = tmp </> takeFileName interpInFile <.> "masm"
+   masmMod <- runBuild $
+     BuildOpts { buildInFile = interpInFile,
+                 buildOutMasmFile = masmFile,
+                 checkImports = True,
+                 dumpWasm = idumpWasm,
+                 dumpWasmAst = idumpWasmAst,
+                 dumpMasm = idumpMasm,
+                 dumpMasmAst = idumpMasmAst,
+                 brunToo = False,
+                 bverifyToo = False
+               }
+   case interpret masmMod of
+     (stack, mem) -> do
+       midenStack <- either (\e -> error $ "Miden error: " ++ show e) id <$> runMiden masmMod
+       dumps2 ("Interpreter output (" ++ interpInFile ++ ")")
+              ([ "Stack: " ++ show stack
+               , "       " ++ "(length = " ++ show (length stack) ++ ")"
+               , "Memory:"
+               ] ++
+               [ "     - " ++ padRight (maxL mem) ("[" ++ show k ++ "] ") ++
+                 show v
+               | (k, v) <- IntMap.toList (linearmem mem)
+               ]
+              )
+              ("Miden output (" ++ interpInFile ++ ")")
+              ([ "Stack: " ++ show midenStack
+               , "       " ++ "(length = " ++ show (length midenStack) ++ ")"
+               ]
+              )
+   where padRight n s = s ++ replicate (n - length s) ' '
+         maxL mem = length . show $ maximum (IntMap.keys (linearmem mem))
 
 data MidenOut = MidenOut
   { stack :: [String],
@@ -223,7 +264,7 @@ withWasm fp operation = case takeExtension fp of
     case Wasm.decodeLazy wasmCode of
       Left err -> error ("couldn't parse binary WASM from " ++ fp ++ ": " ++ err)
       Right wasmMod -> operation (DotWasm fp) wasmMod
-  _ -> error ("cannot handle file: " ++ fp ++ ", only .c and .wat are supported")
+  _ -> error ("cannot handle file: " ++ fp ++ ", only .c, .wasm and .wat are supported")
 
 ---------------
 
@@ -237,6 +278,18 @@ dumpFile :: String -> FilePath -> IO ()
 dumpFile header fp = do
   s <- readFile fp
   dumps (header ++ " (" ++ fp ++ ")") (lines s)
+
+dumps2 :: String -> [String] -> String -> [String] -> IO ()
+dumps2 lbl1 lns1 lbl2 lns2 = dump . unlines $
+  hcat (decorate lbl1 lns1) (decorate lbl2 lns2)
+
+hcat :: [String] -> [String] -> [String]
+hcat xs ys = go xs ys
+  where xsMaxLen = maximum (map length xs)
+        sepLen = 4
+        go as [] = as
+        go [] bs = map (\s -> replicate (xsMaxLen + sepLen) ' ' ++ s) bs
+        go (a:as) (b:bs) = (a ++ replicate sepLen ' ' ++ b) : go as bs
 
 decorate :: String -> [String] -> [String]
 decorate str lns =
@@ -261,4 +314,5 @@ decorate str lns =
     mylength [] = 0
     mylength ('\ESC' : xs) = case dropWhile (/= 'm') xs of
       rest -> mylength (tail rest)
+    mylength ('\t' : xs) = 4 + mylength xs
     mylength (_x : xs) = 1 + mylength xs

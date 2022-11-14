@@ -65,7 +65,6 @@ interpret m = go (programInstrs $ moduleProg m) stack0 mem0
         go (INeq : is) (b:a:xs) mem = go is ((if a /= b then 1 else 0):xs) mem
         go (ILt : is) (b:a:xs) mem = go is ((if a < b then 1 else 0):xs) mem
         go (IGt : is) (b:a:xs) mem = go is ((if a > b then 1 else 0):xs) mem
-        go (TruncateStack : is) st mem = go is st mem
         go (Exec procedure : is) st mem = case findProc procedure of
             -- check nlocals & stack compatibility?
             Just p -> case go (procInstrs p) st mem of
@@ -90,6 +89,7 @@ interpret m = go (programInstrs $ moduleProg m) stack0 mem0
                 1 -> go (thenB ++ is) xs mem
                 0 -> go (elseB ++ is) xs mem
                 _ -> impossible (IfTrue thenB elseB) (a:xs) mem
+        go (TruncateStack : is) st mem = go is (take 16 st) mem
         go (i:_) st mem = impossible i st mem
         go [] st mem = (st, mem)
 

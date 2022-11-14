@@ -19,6 +19,7 @@ library
     MASM.Miden,
     Validation,
     W2M,
+    W2M.Stack,
     Count
   hs-source-dirs:     src
   build-depends:      base >=4.13 && <5,
