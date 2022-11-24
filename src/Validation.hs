@@ -6,6 +6,7 @@ import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
 import qualified Data.DList as DList
+import Data.List (sortOn)
 import Data.Typeable
 import GHC.Natural
 import GHC.Generics
@@ -40,12 +41,27 @@ data VError
   | WasmFunctionCallIdx Int
   | UnsupportedInstruction (WASM.Instruction Natural)
   | Unsupported64Bits String
-  | UnsupportedMemAlign Natural
+  | UnsupportedMemAlign Natural (WASM.Instruction Natural)
   | NoMultipleMem
   | UnsupportedImport LT.Text LT.Text LT.Text
   | WasmStackProblem StackProblem
   | UnsupportedArgType WASM.ValueType
   deriving Show
+
+errIdx :: VError -> Int
+errIdx e = case e of
+  FPOperation _ -> 0
+  GlobalMut _ -> 1
+  NoMain -> 2
+  StdValidation _ -> 3
+  WasmFunctionCallIdx _ -> 4
+  UnsupportedInstruction _ -> 5
+  Unsupported64Bits _ -> 6
+  UnsupportedMemAlign _ _ -> 7
+  NoMultipleMem -> 8
+  UnsupportedImport _ _ _ -> 9
+  WasmStackProblem _ -> 10
+  UnsupportedArgType _ -> 11
 
 badFPOp :: String -> V a
 badFPOp s = bad (FPOperation s)
@@ -74,8 +90,8 @@ unsupportedInstruction i = bad (UnsupportedInstruction i)
 unsupported64Bits :: Show op => op -> V a
 unsupported64Bits op = bad (Unsupported64Bits $ show op)
 
-unsupportedMemAlign :: Natural -> V a
-unsupportedMemAlign alig = bad (UnsupportedMemAlign alig)
+unsupportedMemAlign :: Natural -> WASM.Instruction Natural -> V a
+unsupportedMemAlign alig instr = bad (UnsupportedMemAlign alig instr)
 
 badStackTypeError :: StackProblem -> V a
 badStackTypeError e = bad (WasmStackProblem e)
@@ -97,7 +113,7 @@ ppErr (StdValidation e) = "a standard validator issue: " ++ show e
 ppErr (WasmFunctionCallIdx i) = "an invalid index in function call: " ++ show i
 ppErr (UnsupportedInstruction i) = "an unsupported WASM instruction: " ++ show i
 ppErr (Unsupported64Bits opstr) = "a 64 bits operation (" ++ opstr ++ ")"
-ppErr (UnsupportedMemAlign a) = "an unsupported alignment: " ++ show a
+ppErr (UnsupportedMemAlign a instr) = "an unsupported alignment: " ++ show a ++ " in " ++ show instr
 ppErr NoMultipleMem = "a need for multiple memories"
 ppErr (UnsupportedImport imodule iname idesc) =
   "an unsupported import: module=" ++ LT.unpack imodule ++
@@ -113,5 +129,5 @@ type V = Validation (DList.DList VError)
 runValidation :: V a -> IO a
 runValidation (Validation e) = case runRWS (runValidateT e) () id0 of
   (Left errs, _i, _w) -> error . unlines $
-    "found: " : fmap (\err -> " - " ++ ppErr err) (DList.toList errs)
+    "found: " : fmap (\err -> " - " ++ ppErr err) (sortOn errIdx $ DList.toList errs)
   (Right a, _i, _w) -> return a

@@ -22,7 +22,8 @@ import Text.Pretty.Simple (pShow)
 import Validation
 import W2M
 import qualified Data.IntMap.Strict as IntMap
-import MASM.Interpreter (interpret, Mem (..))
+import MASM.Interpreter (interpret, runInterp, Mem (..))
+import System.Directory
 
 runCommand :: Command -> IO ()
 runCommand (Build buildOpts) = runBuild buildOpts >> return ()
@@ -78,18 +79,19 @@ runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ 
 runRun :: RunOpts -> IO ()
 runRun RunOpts {..} = do
   dump ("Execution of program " ++ runMasmFile ++ " ...")
-  (ex, midenout, midenerr) <-
+  (_ex, midenout, midenerr) <-
     readProcessWithExitCode
       "miden"
       ["prove", "--assembly", runMasmFile, "-o", runOutFile, "-p", runProofFile]
       ""
-  case ex of
-    ExitFailure n -> do
-      dump ("miden prove failed with exit code: " ++ show n)
+  producedOutputFile <- doesFileExist runOutFile
+  case producedOutputFile of
+    False -> do
+      dump "miden prove failed"
       dumps "miden prove stdout" (lines midenout)
       dumps "miden prove stderr" (lines midenerr)
       error "miden prove failed"
-    ExitSuccess ->
+    True ->
       case map (takeWhile (/= '.') . drop (length hashPrefix)) $ filter (hashPrefix `isPrefixOf`) (lines midenout) of
         [hash] -> do
           ok (runOutFile, runProofFile, hash)
@@ -143,8 +145,8 @@ runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp 
                  brunToo = False,
                  bverifyToo = False
                }
-   case interpret masmMod of
-     (stack, mem) -> do
+   case runInterp (interpret masmMod) of
+     Right (stack, mem) -> do
        midenStack <- either (\e -> error $ "Miden error: " ++ show e) id <$> runMiden masmMod
        dumps2 ("Interpreter output (" ++ interpInFile ++ ")")
               ([ "Stack: " ++ show stack
@@ -161,6 +163,7 @@ runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp 
                , "       " ++ "(length = " ++ show (length midenStack) ++ ")"
                ]
               )
+     Left err -> error err
    where padRight n s = s ++ replicate (n - length s) ' '
          maxL mem = length . show $ maximum (IntMap.keys (linearmem mem))
 

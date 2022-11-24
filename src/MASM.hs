@@ -66,8 +66,9 @@ data Instruction
   | ISub -- "u32checked_sub"
   | IMul -- u32checked_mul
   | IDiv -- u32checked_div
+  | IDivMod (Maybe Word32) -- u32checked_divmod
   | IShL | IShR -- u32checked_{shl, shr}
-  | IAnd | IOr | IXor -- u32checked_{and, or, xor}
+  | IAnd | IOr | IXor | INot -- u32checked_{and, or, xor, not}
   | IEq (Maybe Word32) | INeq -- u32checked_{eq[.n], neq}
   | ILt | IGt | ILte | IGte -- u32checked_{lt[e], gt[e]}
 
@@ -130,6 +131,7 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr ISub = [ "u32checked_sub" ]
         ppInstr IMul = [ "u32checked_mul" ]
         ppInstr IDiv = [ "u32checked_div" ]
+        ppInstr (IDivMod mk) = [ "u32checked_divmod" ++ maybe "" (\k -> "." ++ show k) mk ]
         ppInstr IShL = [ "u32checked_shl" ]
         ppInstr IShR = [ "u32checked_shr" ]
         ppInstr (IEq mk) = [ "u32checked_eq" ++ maybe "" (\k -> "." ++ show k) mk ]
@@ -141,6 +143,7 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr IAnd = [ "u32checked_and" ]
         ppInstr IOr = [ "u32checked_or" ]
         ppInstr IXor = [ "u32checked_xor" ]
+        ppInstr INot = [ "u32checked_not" ]
 
         ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
         ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]

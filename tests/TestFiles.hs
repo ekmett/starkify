@@ -1,7 +1,7 @@
 module TestFiles where
 
 import Eval (simulateWASM, simulateMASM)
-import MASM.Interpreter (interpret, FakeW64(..), fromFakeW64)
+import MASM.Interpreter (runInterp, interpret, FakeW64(..), fromFakeW64)
 import MASM.Miden
 import Validation (runValidation)
 import W2M (toMASM)
@@ -71,11 +71,11 @@ withWasm fp f
 
 compareWasmMasmResult :: FilePath -> Wasm.Module -> Expectation
 compareWasmMasmResult expectedOutFile wmod = do
+  mwasmres <- simulateWASM wmod
   mexpectedOut <- readMaybe <$> readFile expectedOutFile
   expectedOut <- case mexpectedOut of
     Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
     Just res -> return res
-  mwasmres <- simulateWASM wmod
   mmod <- runValidation (toMASM True wmod)
   mmasmres <- runMiden mmod
   case (mwasmres, mmasmres) of
@@ -112,8 +112,9 @@ checkInterpreter expectedOutFile wmod = do
     Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
     Just res -> return res
   mmod <- runValidation (toMASM True wmod)
-  case interpret mmod of
-    (stack, _mem) -> checkOutput expectedOut stack
+  case runInterp (interpret mmod) of
+    Right (stack, _mem) -> checkOutput expectedOut stack
+    Left err -> error ("checkInterpreter: " ++ err)
 
 main :: IO ()
 main = do
@@ -128,7 +129,7 @@ main = do
                       withWasm ("testfiles" </> fp) (compareWasmMasmResult ("testfiles" </> fp <.> "out"))
                     it "can be executed through Miden to get a proof which can be successfully verified" $
                       withWasm ("testfiles" </> fp) genProofAndVerify
-                    --it "can be executed by our interpreter and return the correct result" $
-                    --  withWasm ("testfiles" </> fp) (checkInterpreter ("testfiles" </> fp <.> "out"))
+                    -- it "can be executed by our interpreter and return the correct result" $
+                    --   withWasm ("testfiles" </> fp) (checkInterpreter ("testfiles" </> fp <.> "out"))
                 | fp <- testfiles
                 ]
