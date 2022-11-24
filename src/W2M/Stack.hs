@@ -23,7 +23,7 @@ assumingPrefix inst prefix f = do
     else throwError (StackExpectedGot prefix stack inst)
 
 noPrefix :: (StackType -> (a, StackType)) -> StackFun a
-noPrefix f = state f
+noPrefix = state
 
 withPrefix :: (StackElem -> StackFun a) -> StackFun a
 withPrefix f = do

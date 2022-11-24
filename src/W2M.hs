@@ -1,10 +1,11 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PartialTypeSignatures #-}
-{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE LambdaCase #-}
 
 module W2M where
 
+import Data.Bifunctor (first)
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
 import Data.Foldable
@@ -63,7 +64,7 @@ toMASM checkImports m = do
 
         globalsAddrMap :: Vector MasmAddr
         memBeginning :: MasmAddr
-        (globalsAddrMap, memBeginning) = (\(xs, n) -> (V.fromList xs, n)) $ foldl' f ([], 0) (W.globals m)
+        (globalsAddrMap, memBeginning) = first V.fromList $ foldl' f ([], 0) (W.globals m)
           where f (xs, n) globl_i =
                   let ncells = case W.globalType globl_i of
                                  W.Const t -> numCells t
@@ -77,7 +78,7 @@ toMASM checkImports m = do
           , W.Call k <- instrs
           , callee <- maybeToList $ Map.lookup (fromIntegral k) functionNamesMap
           ]
-        enumerate x = x : concatMap enumerate [ y | y <- maybe [] Set.toList (Map.lookup x callGraph) ]
+        enumerate x = x : concatMap enumerate (maybe [] Set.toList (Map.lookup x callGraph))
         mainFunName
           | Just (W.StartFunction k) <- W.start m, Just startF <- Map.lookup (fromIntegral k) functionNamesMap =
               startF
@@ -134,9 +135,8 @@ toMASM checkImports m = do
         getGlobalsInit = concat <$> traverse getGlobalInit (zip [0..] (W.globals m))
 
         getGlobalInit :: (Int, W.Global) -> V [M.Instruction]
-        getGlobalInit (k, g) = do
-          xs <- translateInstrs [] mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
-          return xs
+        getGlobalInit (k, g) =
+          translateInstrs [] mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
 
         getGlobalTy k 
           | fromIntegral k < length (W.globals m) = case t of
@@ -189,7 +189,7 @@ toMASM checkImports m = do
 
         functionTypesMap :: Map Text W.FuncType
         functionTypesMap =
-          fmap (\f -> case f of
+          fmap (\case
                   Left (W.Function tyIdx _ _) -> W.types m !! fromIntegral tyIdx
                   Right (WIF _mdl _nm t) -> t
                ) allFunctionsMap
@@ -207,7 +207,7 @@ toMASM checkImports m = do
                 foldl' (\(addrs, cnt) (k, ty) -> case ty of
                            W.I32 -> (Map.insert k (SI32, [cnt]) addrs, cnt+1)
                            W.I64 -> (Map.insert k (SI64, [cnt, cnt+1]) addrs, cnt+2)
-                           _     -> error $ "localAddrMap: floating point local var?"
+                           _     -> error "localAddrMap: floating point local var?"
                        )
                        (Map.empty, 0)
                        (zip [0..] (wasm_args ++ wasm_locals))
@@ -279,7 +279,7 @@ toMASM checkImports m = do
         translateInstr _ i@(W.I32Store (W.MemArg offset align)) = case align of
           -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
           2 -> pure $ 
-            assumingPrefix i [SI32, SI32] $ \t ->
+            assumingPrefix i [SI32, SI32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                  ( [ M.Swap 1
                    , M.Push 4
@@ -291,8 +291,7 @@ toMASM checkImports m = do
                    , M.MemStore Nothing
                    , M.Drop
                    ]
-                 , t
-                 )
+                 ,)
           _ -> unsupportedMemAlign align i
         translateInstr _ i@(W.I32Load8U (W.MemArg offset align)) = case align of
           0 -> pure $
@@ -339,7 +338,7 @@ toMASM checkImports m = do
           -- v'  = xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
           -- and storing v' | i'
           0 -> pure $
-            assumingPrefix i [SI32, SI32] $ \t ->
+            assumingPrefix i [SI32, SI32]
                  ( [ M.Swap 1                     -- [byte_addr, i, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
                    , M.IAdd                       -- [byte_addr+offset, i, ...]
@@ -365,8 +364,7 @@ toMASM checkImports m = do
                    , M.MemStore Nothing           -- [final_val, ...]
                    , M.Drop                       -- [...]
                    ]
-                 , t
-                 )
+                 ,)
           _ -> unsupportedMemAlign align i
         translateInstr _ i@(W.I32Load16U (W.MemArg offset align)) = case align of
           1 -> pure $
@@ -403,7 +401,7 @@ toMASM checkImports m = do
           | mod offset 4 == 3 = error "offset = 3!"
           | otherwise   = case align of
           1 -> pure $
-            assumingPrefix i [SI32, SI32] $ \t ->
+            assumingPrefix i [SI32, SI32]
                  ( [ M.Swap 1                     -- [byte_addr, i, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
                    , M.IAdd                       -- [byte_addr+offset, i, ...]
@@ -429,8 +427,7 @@ toMASM checkImports m = do
                    , M.MemStore Nothing           -- [final_val, ...]
                    , M.Drop                       -- [...]
                    ]
-                 , t
-                 )
+                 ,)
           _ -> unsupportedMemAlign align i
 
         -- locals
@@ -440,15 +437,14 @@ toMASM checkImports m = do
 
         translateInstr localAddrs i@(W.SetLocal k) = case Map.lookup k localAddrs of
           Just (loct, as) -> pure $
-            assumingPrefix i [loct] $ \t -> 
+            assumingPrefix i [loct]
               ( concat
                   [ [ M.LocStore a
                     , M.Drop
                     ]
                   | a <- reverse as
                   ]
-              , t
-              )
+              ,)
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
         translateInstr localAddrs (W.TeeLocal k) =
           liftA2 (++) <$> translateInstr localAddrs (W.SetLocal k)
@@ -468,20 +464,18 @@ toMASM checkImports m = do
             , SI64:t
             )
         translateInstr _ i@(W.SetGlobal k) = case getGlobalTy k of
-          SI32 -> pure $ assumingPrefix i [SI32] $ \t ->
+          SI32 -> pure $ assumingPrefix i [SI32]
             ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k 
               , M.Drop
               ]
-            , t
-            )
-          SI64 -> pure $ assumingPrefix i [SI64] $ \t -> 
+            ,)
+          SI64 -> pure $ assumingPrefix i [SI64]
             ( [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
               , M.Drop
               , M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k)
               , M.Drop
               ]
-            , t
-            )
+            ,)
 
         -- https://maticnetwork.github.io/miden/user_docs/stdlib/math/u64.html
         -- 64 bits integers are emulated by separating the high and low 32 bits.
@@ -522,7 +516,7 @@ toMASM checkImports m = do
           -- and the call mem_store twice
           -- (once at u32_addr, once at u32_addr+1)
           -- to get hi and lo 32 bits of i64 value.
-          pure $ assumingPrefix i [SI64, SI32] $ \t ->
+          pure $ assumingPrefix i [SI64, SI32]
             ( [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
               , M.Push 4, M.IDiv
               , M.Push (fromIntegral offset `div` 4)
@@ -537,8 +531,7 @@ toMASM checkImports m = do
               , M.MemStore Nothing -- [lo, ...]
               , M.Drop -- [...]
               ]
-            , t
-            )
+            ,)
 
         -- turning an i32 into an i64 in wasm corresponds to pushing 0 on the stack.
         -- let's call the i32 'i'. before executing this, the stack looks like [i, ...],
@@ -549,10 +542,10 @@ toMASM checkImports m = do
           assumingPrefix i [SI32] $ \t -> ([M.Push 0], SI64:t)
         translateInstr _ i@W.I64Eqz = pure $
           assumingPrefix i [SI64] $ \t -> ([M.IEqz64], SI32:t)
-        translateInstr _ W.Drop = pure $ withPrefix $ \ty ->
+        translateInstr _ W.Drop = pure $ withPrefix $
           -- is the top of the WASM stack an i32 or i64, at this point in time?
           -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
-          case ty of
+          \case
             SI32 -> return [M.Drop]
             SI64 -> return [M.Drop, M.Drop]
 

@@ -59,7 +59,7 @@ errIdx e = case e of
   Unsupported64Bits _ -> 6
   UnsupportedMemAlign _ _ -> 7
   NoMultipleMem -> 8
-  UnsupportedImport _ _ _ -> 9
+  UnsupportedImport {} -> 9
   WasmStackProblem _ -> 10
   UnsupportedArgType _ -> 11
 

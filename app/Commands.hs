@@ -26,7 +26,7 @@ import MASM.Interpreter (interpret, runInterp, Mem (..))
 import System.Directory
 
 runCommand :: Command -> IO ()
-runCommand (Build buildOpts) = runBuild buildOpts >> return ()
+runCommand (Build buildOpts) = void (runBuild buildOpts)
 runCommand (Run runOpts) = runRun runOpts
 runCommand (Verify verifyOpts) = runVerify verifyOpts
 runCommand (Interpret interpretOpts) = runInterpret interpretOpts
@@ -84,8 +84,7 @@ runRun RunOpts {..} = do
       "miden"
       ["prove", "--assembly", runMasmFile, "-o", runOutFile, "-p", runProofFile]
       ""
-  producedOutputFile <- doesFileExist runOutFile
-  case producedOutputFile of
+  doesFileExist runOutFile >>= \case
     False -> do
       dump "miden prove failed"
       dumps "miden prove stdout" (lines midenout)
@@ -159,10 +158,9 @@ runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp 
                ]
               )
               ("Miden output (" ++ interpInFile ++ ")")
-              ([ "Stack: " ++ show midenStack
-               , "       " ++ "(length = " ++ show (length midenStack) ++ ")"
-               ]
-              )
+              [ "Stack: " ++ show midenStack
+              , "       " ++ "(length = " ++ show (length midenStack) ++ ")"
+              ]
      Left err -> error err
    where padRight n s = s ++ replicate (n - length s) ' '
          maxL mem = length . show $ maximum (IntMap.keys (linearmem mem))
