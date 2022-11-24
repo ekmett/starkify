@@ -3,7 +3,8 @@ module MASM.Interpreter where
 import Data.Bits ( Bits(shiftR, shiftL), (.&.), xor, (.|.) )
 import Data.Word ( Word32, Word64 )
 import MASM
-import Data.Maybe (listToMaybe, fromMaybe)
+import Data.List (find)
+import Data.Maybe (fromMaybe)
 import qualified Data.IntMap.Strict as IntMap
 
 type Value = Word32
@@ -28,7 +29,7 @@ interpret m = foldM step state0 (programInstrs $ moduleProg m)
         state0 = (stack0, mem0)
         
 foldM :: MonadFail m => (a -> s -> m s) -> s -> [a] -> m s
-foldM f z = go z
+foldM f = go
     where go s (x:xs) = do
             s' <- f x s
             go s' xs
@@ -62,8 +63,8 @@ step IMul64 (b_hi:b_lo:a_hi:a_lo:xs, mem) =
 step ISub (b:a:xs, mem) = pure ((a-b):xs, mem)
 step IMul (b:a:xs, mem) = pure ((a*b):xs, mem)
 step IDiv (b:a:xs, mem) = pure ((a`div`b):xs, mem)
-step IShL (b:a:xs, mem) = pure ((shiftL a (fromIntegral b)):xs, mem)
-step IShR (b:a:xs, mem) = pure ((shiftR a (fromIntegral b)):xs, mem)
+step IShL (b:a:xs, mem) = pure (shiftL a (fromIntegral b) : xs, mem)
+step IShR (b:a:xs, mem) = pure (shiftR a (fromIntegral b) : xs, mem)
 step IAnd (b:a:xs, mem) = pure ((a .&. b):xs, mem)
 step IOr (b:a:xs, mem) = pure ((a .|. b):xs, mem)
 step IXor (b:a:xs, mem) = pure ((a `xor` b):xs, mem)
@@ -104,7 +105,7 @@ step TruncateStack (st, mem) = pure (take 16 st, mem) -- probably not quite what
 step i (st, mem) = impossible i st mem
 
 findProc :: ProcName -> Module -> Maybe Proc
-findProc name m = listToMaybe $ filter (\p -> procName p == name) (moduleProcs m)
+findProc name m = find (\p -> procName p == name) (moduleProcs m)
 
 impossible :: MonadFail m => Instruction -> [Value] -> Mem -> m a
 impossible inst st mem = fail $ unlines

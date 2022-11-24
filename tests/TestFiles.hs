@@ -120,7 +120,7 @@ main :: IO ()
 main = do
     cwd <- getCurrentDirectory
     exists <- doesDirectoryExist (cwd </> "testfiles")
-    when (not exists) $
+    unless exists $
       error "you must execute this testsuite from the root of the starkify directory"
     testfiles <- filter (not . (".out" `isSuffixOf`)) . sort <$> listDirectory (cwd </> "testfiles")
     hspec $
