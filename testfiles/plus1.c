@@ -1,4 +1,4 @@
 __attribute__((noinline))
-int p1(int x) { return x+1; }
+unsigned int p1(unsigned int x) { return x+1; }
 
-int main() { return p1(p1(0)); }
+unsigned int main() { return p1(p1(0)); }

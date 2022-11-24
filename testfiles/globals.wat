@@ -4,7 +4,7 @@
     global.get 0
     global.get 1
     i32.add
-    i64.extend_i32_s
+    i64.extend_i32_u
     global.get 2
     global.get 5
     i64.add

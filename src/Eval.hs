@@ -12,17 +12,17 @@ import Data.Word
 
 simulateWASM :: WASM.Module -> IO (Maybe [WASM.Value])
 simulateWASM m = case WASM.validate m of
-    Left err -> error (show err)
+    Left err -> error ("WASM typechecker: " ++ show err)
     Right mvalid -> do
       let store = WASM.emptyStore
           imports = WASM.emptyImports
       (r, store') <- WASM.instantiate store imports mvalid
       case r of
-          Left err -> error err
+          Left err -> error ("WASM interpreter: " ++ err)
           Right minstance -> WASM.invokeExport store' minstance "main" []
 
-simulateMASM :: MASM.Module -> ([Word32], MASM.Mem)
-simulateMASM = MASM.interpret
+simulateMASM :: MASM.Module -> Either String ([Word32], MASM.Mem)
+simulateMASM = MASM.runInterp . MASM.interpret
 
 runMiden :: MASM.Module -> IO (Either String [Word32])
 runMiden = Miden.runMiden

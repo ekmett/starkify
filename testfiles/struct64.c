@@ -1,11 +1,11 @@
 typedef struct {
-  long long int x, y;
+  unsigned long long x, y;
 } v2;
 
 __attribute__((noinline))
-long long int sq(v2* u) { return (u->x * u->x + u->y * u->y); }
+unsigned long long sq(v2* u) { return (u->x * u->x + u->y * u->y); }
 
-long long int main() {
+unsigned long long main() {
     v2 u = { 2, 1 };
     return sq(&u);
 }

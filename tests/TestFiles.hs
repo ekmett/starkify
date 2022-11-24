@@ -1,6 +1,7 @@
 module TestFiles where
 
 import Eval (simulateWASM, simulateMASM)
+import MASM.Interpreter (runInterp, interpret, FakeW64(..), fromFakeW64)
 import MASM.Miden
 import Validation (runValidation)
 import W2M (toMASM)
@@ -8,6 +9,7 @@ import W2M (toMASM)
 import Control.Exception
 import Control.Monad
 import Data.List (isSuffixOf, sort)
+import Data.Word
 import System.Directory
 import System.Exit
 import System.FilePath
@@ -19,8 +21,6 @@ import Text.Read
 import qualified Data.ByteString.Lazy as LBS
 import qualified Language.Wasm as Wasm
 import qualified Language.Wasm.Interpreter as Wasm
-import MASM.Interpreter (FakeW64(..), fromFakeW64)
-import Control.Monad (sequence)
 
 withCompiledC
  :: FilePath -- path to .c file
@@ -69,25 +69,20 @@ withWasm fp f
   | takeExtension fp == ".wat" = withWasmFromWat fp f
   | otherwise = error ("withWasm cannot handle testfile: " ++ fp)
 
--- TODO: add MASM.Interpreter once it behaves 100% like Miden
 compareWasmMasmResult :: FilePath -> Wasm.Module -> Expectation
 compareWasmMasmResult expectedOutFile wmod = do
+  mwasmres <- simulateWASM wmod
   mexpectedOut <- readMaybe <$> readFile expectedOutFile
   expectedOut <- case mexpectedOut of
     Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
     Just res -> return res
-  mwasmres <- simulateWASM wmod
-  mmod <- runValidation (toMASM wmod)
+  mmod <- runValidation (toMASM True wmod)
   mmasmres <- runMiden mmod
   case (mwasmres, mmasmres) of
     (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks vals stack 0
     _ -> error ("unexpected results: " ++ show (mwasmres, mmasmres))
 
-  where checkOutput expected actual = do
-          take (length expected) actual `shouldBe` expected
-          drop (length expected) actual `shouldBe` replicate (16 - length expected) 0
-    
-        compareStacks [] masmstack _k = filter (/=0) masmstack `shouldBe` []
+  where compareStacks [] masmstack _k = filter (/=0) masmstack `shouldBe` []
         compareStacks (Wasm.VI32 wasm_w32 : wasm_vs) (masm_w32 : masm_vs) k = do
           wasm_w32 `shouldBe` masm_w32
           compareStacks wasm_vs masm_vs (k+1)
@@ -97,13 +92,29 @@ compareWasmMasmResult expectedOutFile wmod = do
           compareStacks wasm_vs masm_vs (k+1)
         compareStacks wasmstack masmstack k = error $ "cannot compare stacks: " ++ show (wasmstack, masmstack)
 
+checkOutput :: [Word32] -> [Word32] -> Expectation
+checkOutput expected actual = do
+          take (length expected) actual `shouldBe` expected
+          drop (length expected) actual `shouldBe` replicate (16 - length expected) 0
+
 genProofAndVerify :: Wasm.Module -> Expectation
 genProofAndVerify wmod = do
-  mmod <- runValidation (toMASM wmod)
+  mmod <- runValidation (toMASM True wmod)
   (midenOut, midenProof, midenProgHash) <- runMidenProve mmod
   verifRes <- runMidenVerify midenOut midenProof midenProgHash
   verifRes `shouldBe` Nothing
   -- TODO cleanup temp files
+
+checkInterpreter :: FilePath -> Wasm.Module -> Expectation
+checkInterpreter expectedOutFile wmod = do
+  mexpectedOut <- readMaybe <$> readFile expectedOutFile
+  expectedOut <- case mexpectedOut of
+    Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
+    Just res -> return res
+  mmod <- runValidation (toMASM True wmod)
+  case runInterp (interpret mmod) of
+    Right (stack, _mem) -> checkOutput expectedOut stack
+    Left err -> error ("checkInterpreter: " ++ err)
 
 main :: IO ()
 main = do
@@ -116,7 +127,9 @@ main = do
       sequence_ [ describe ("testfiles" </> fp) $ do
                     it "gives the same, correct result with wasm and miden" $
                       withWasm ("testfiles" </> fp) (compareWasmMasmResult ("testfiles" </> fp <.> "out"))
-                    it "can be executed to get a proof which can be successfully verified" $
+                    it "can be executed through Miden to get a proof which can be successfully verified" $
                       withWasm ("testfiles" </> fp) genProofAndVerify
+                    -- it "can be executed by our interpreter and return the correct result" $
+                    --   withWasm ("testfiles" </> fp) (checkInterpreter ("testfiles" </> fp <.> "out"))
                 | fp <- testfiles
                 ]

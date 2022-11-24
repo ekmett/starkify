@@ -1,4 +1,4 @@
 __attribute__((noinline))
-int id_int(int i) { return i; }
+unsigned int id_int(unsigned int i) { return i; }
 
-int main() { return id_int(13); }
+unsigned int main() { return id_int(13); }

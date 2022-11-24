@@ -1,8 +1,8 @@
 __attribute__((noinline))
-int dbl(int x) { return 2*x; }
+unsigned int dbl(unsigned int x) { return 2*x; }
 
-int main()
+unsigned int main()
 { 
-    int x = 23;
+    unsigned int x = 23;
     return dbl(x);
 }

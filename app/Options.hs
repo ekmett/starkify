@@ -1,25 +1,27 @@
 module Options
-  ( Command(..), BuildOpts(..), RunOpts(..), VerifyOpts(..)
+  ( Command(..), BuildOpts(..), RunOpts(..), VerifyOpts(..), InterpretOpts(..)
   , getCommand
   ) where
 
 import Options.Applicative
 
 data Command
-  = Build   BuildOpts
-  | Run     RunOpts
-  | Verify  VerifyOpts
+  = Build BuildOpts
+  | Run RunOpts
+  | Verify VerifyOpts
+  | Interpret InterpretOpts
   deriving Show
 
 data BuildOpts = BuildOpts
   { buildInFile      :: FilePath
   , buildOutMasmFile :: FilePath
+  , checkImports     :: Bool
   , dumpWasm         :: Bool
   , dumpWasmAst      :: Bool
   , dumpMasm         :: Bool
   , dumpMasmAst      :: Bool
-  , brunToo           :: Bool
-  , bverifyToo        :: Bool
+  , brunToo          :: Bool
+  , bverifyToo       :: Bool
   } deriving Show
 
 data RunOpts = RunOpts
@@ -33,6 +35,14 @@ data VerifyOpts = VerifyOpts
   { verifyProofFile :: FilePath
   , verifyOutFile   :: FilePath
   , verifyHash      :: String
+  } deriving Show
+
+data InterpretOpts = InterpretOpts
+  { interpInFile :: FilePath
+  , idumpWasm    :: Bool
+  , idumpWasmAst :: Bool
+  , idumpMasm    :: Bool
+  , idumpMasmAst :: Bool
   } deriving Show
 
 getCommand :: IO Command
@@ -52,6 +62,9 @@ parseCommand = hsubparser
  <> command "verify" (info (Verify <$> verifyOpts)
                            (progDesc "Verify a proof")
                      )
+ <> command "interpret" (info (Interpret <$> interpretOpts)
+                              (progDesc "Interpret a program")
+                        )
   )
 
 buildOpts :: Parser BuildOpts
@@ -60,13 +73,18 @@ buildOpts = BuildOpts
             ( long "input"
            <> short 'i'
            <> metavar "FILE"
-           <> help "path to .c or .wat (textual WASM) input file to compile"
+           <> help "path to .c, .wasm (binary WASM) or .wat (textual WASM) input file to compile"
             )
         <*> strOption
             ( long "output"
            <> short 'o'
            <> metavar "FILE"
            <> help "path to .masm output file"
+            )
+        <*> switch
+            ( long "check-imports"
+           <> short 'c'
+           <> help "whether to check if imports can be 'resolved' by starkify (they're ignored by default)"
             )
         <*> switch
             ( long "dump-wasm"
@@ -84,7 +102,7 @@ buildOpts = BuildOpts
             )
         <*> switch
             ( long "dump-masm-ast"
-           <> help "dump textual WASM code"
+           <> help "dump the Haskell structures representing the MASM syntax tree"
             )
         <*> switch
             ( long "run"
@@ -143,3 +161,30 @@ verifyOpts = VerifyOpts
               <> metavar "HASH"
               <> help "hash of the program"
                )
+
+interpretOpts :: Parser InterpretOpts
+interpretOpts = InterpretOpts
+        <$> strOption
+            ( long "input"
+           <> short 'i'
+           <> metavar "FILE"
+           <> help "path to .c, .wasm (binary WASM) or .wat (textual WASM) input file to compile"
+            )
+        <*> switch
+            ( long "dump-wasm"
+           <> short 'w'
+           <> help "dump textual WASM code"
+            )
+        <*> switch
+            ( long "dump-wasm-ast"
+           <> help "dump the Haskell structures representing the WASM syntax tree"
+            )
+        <*> switch
+            ( long "dump-masm"
+           <> short 'm'
+           <> help "dump textual WASM code"
+            )
+        <*> switch
+            ( long "dump-masm-ast"
+           <> help "dump the Haskell structures representing the MASM syntax tree"
+            )

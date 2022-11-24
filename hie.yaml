@@ -5,4 +5,4 @@ cradle:
     - path: "src/"
       component: "starkify:lib:starkify"
     - path: "tests/"
-      component: "starkify:test:starkify"
+      component: "starkify:test:starkify-testfiles"

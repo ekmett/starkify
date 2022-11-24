@@ -66,13 +66,16 @@ data Instruction
   | ISub -- "u32checked_sub"
   | IMul -- u32checked_mul
   | IDiv -- u32checked_div
-  | ShL | ShR -- u32checked_{shl, shr}
-  | And | Or | Xor -- u32checked_{and, or, xor}
-  | EqConst Word32 | Eq | Neq -- u32checked_{eq.n, eq, neq}
-  | Lt | Gt -- u32checked_{lt, gt}
+  | IDivMod (Maybe Word32) -- u32checked_divmod
+  | IShL | IShR -- u32checked_{shl, shr}
+  | IAnd | IOr | IXor | INot -- u32checked_{and, or, xor, not}
+  | IEq (Maybe Word32) | INeq -- u32checked_{eq[.n], neq}
+  | ILt | IGt | ILte | IGte -- u32checked_{lt[e], gt[e]}
 
-  -- "faked 64 bits" operations
-  | IAdd64 | IMul64
+  -- "faked 64 bits" operations, u64::checked_{add,sub,mul}
+  | IAdd64 | ISub64 | IMul64
+  | IEq64 | IEqz64 | INeq64
+  | ILt64 | IGt64 | ILte64 | IGte64
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 newtype PpMASM a = PpMASM {runPpMASM :: Writer (DList.DList String) a}
@@ -128,21 +131,32 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr ISub = [ "u32checked_sub" ]
         ppInstr IMul = [ "u32checked_mul" ]
         ppInstr IDiv = [ "u32checked_div" ]
-        ppInstr ShL = [ "u32checked_shl" ]
-        ppInstr ShR = [ "u32checked_shr" ]
-        ppInstr (EqConst k) = [ "u32checked_eq." ++ show k ]
-        ppInstr Eq = [ "u32checked_eq" ]
-        ppInstr Neq = [ "u32checked_neq" ]
-        ppInstr Lt = [ "u32checked_lt" ]
-        ppInstr Gt = [ "u32checked_gt" ]
-        ppInstr And = [ "u32checked_and" ]
-        ppInstr Or = [ "u32checked_or" ]
-        ppInstr Xor = [ "u32checked_xor" ]
+        ppInstr (IDivMod mk) = [ "u32checked_divmod" ++ maybe "" (\k -> "." ++ show k) mk ]
+        ppInstr IShL = [ "u32checked_shl" ]
+        ppInstr IShR = [ "u32checked_shr" ]
+        ppInstr (IEq mk) = [ "u32checked_eq" ++ maybe "" (\k -> "." ++ show k) mk ]
+        ppInstr INeq = [ "u32checked_neq" ]
+        ppInstr ILt = [ "u32checked_lt" ]
+        ppInstr IGt = [ "u32checked_gt" ]
+        ppInstr ILte = [ "u32checked_lte" ]
+        ppInstr IGte = [ "u32checked_gte" ]
+        ppInstr IAnd = [ "u32checked_and" ]
+        ppInstr IOr = [ "u32checked_or" ]
+        ppInstr IXor = [ "u32checked_xor" ]
+        ppInstr INot = [ "u32checked_not" ]
 
         ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
         ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
         ppInstr IAdd64 = [ "exec.u64::checked_add" ]
+        ppInstr ISub64 = [ "exec.u64::checked_sub" ]
         ppInstr IMul64 = [ "exec.u64::checked_mul" ]
+        ppInstr IEq64 = [ "exec.u64::checked_eq" ]
+        ppInstr INeq64 = [ "exec.u64::checked_neq" ]
+        ppInstr IEqz64 = [ "exec.u64::checked_eqz" ]
+        ppInstr ILt64 = [ "exec.u64::checked_lt" ]
+        ppInstr IGt64 = [ "exec.u64::checked_gt" ]
+        ppInstr ILte64 = [ "exec.u64::checkted_lte" ]
+        ppInstr IGte64 = [ "exec.u64::checked_gte" ]
 
 mod1 :: Module
 mod1 = Module
