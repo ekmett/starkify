@@ -116,21 +116,6 @@ toMASM checkImports m = do
                  [ M.Drop ]                     -- [...]
         getDataInit _ = badNoMultipleMem
 
-        writeW32s :: [Word8] -> [M.Instruction]
-        writeW32s [] = []
-        writeW32s (a:b:c:d:xs) =
-          let w = foldl' (.|.) 0 [ shiftL (fromIntegral x) (8 * i)
-                                 | (i, x) <- zip [0..] [a,b,c,d]
-                                 ]
-          in [ M.Dup 0 -- [addr_u32, addr_u32, ...]
-             , M.Push w -- [w, addr_u32, addr_u32, ...]
-             , M.Swap 1 -- [addr_u32, w, addr_u32, ...]
-             , M.MemStore Nothing -- [w, addr_u32, ...]
-             , M.Drop -- [addr_u32, ...]
-             , M.Push 1, M.IAdd -- [addr_u32+1, ...]
-             ] ++ writeW32s xs
-        writeW32s xs = writeW32s $ xs ++ replicate (4-length xs) 0
-
         getGlobalsInit :: V [M.Instruction]
         getGlobalsInit = concat <$> traverse getGlobalInit (zip [0..] (W.globals m))
 
@@ -553,53 +538,50 @@ toMASM checkImports m = do
         translateInstr a i@(W.Loop _ is) = traverse (translateInstr a) is *> unsupportedInstruction i
         translateInstr _ i = unsupportedInstruction i
 
-        translateIBinOp :: W.BitSize -> W.IBinOp -> V (StackFun [M.Instruction])
-        -- TODO: the u64 module actually provides implementations of many binops for 64 bits
-        -- values.
-        translateIBinOp W.BS64 op = case op of
-          W.IAdd -> pure $ stackBinop op SI64 M.IAdd64
-          W.ISub -> pure $ stackBinop op SI64 M.ISub64
-          W.IMul -> pure $ stackBinop op SI64 M.IMul64
-          _      -> unsupported64Bits op
-        translateIBinOp W.BS32 op = case op of
-          W.IAdd  -> pure $ stackBinop op SI32 M.IAdd
-          W.ISub  -> pure $ stackBinop op SI32 M.ISub
-          W.IMul  -> pure $ stackBinop op SI32 M.IMul
-          W.IShl  -> pure $ stackBinop op SI32 M.IShL
-          W.IShrU -> pure $ stackBinop op SI32 M.IShR
-          W.IAnd  -> pure $ stackBinop op SI32 M.IAnd
-          W.IOr   -> pure $ stackBinop op SI32 M.IOr
-          W.IXor  -> pure $ stackBinop op SI32 M.IXor
-          _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
+translateIBinOp :: W.BitSize -> W.IBinOp -> V (StackFun [M.Instruction])
+-- TODO: the u64 module actually provides implementations of many binops for 64 bits
+-- values.
+translateIBinOp W.BS64 op = case op of
+  W.IAdd -> pure $ stackBinop op SI64 M.IAdd64
+  W.ISub -> pure $ stackBinop op SI64 M.ISub64
+  W.IMul -> pure $ stackBinop op SI64 M.IMul64
+  _      -> unsupported64Bits op
+translateIBinOp W.BS32 op = case op of
+  W.IAdd  -> pure $ stackBinop op SI32 M.IAdd
+  W.ISub  -> pure $ stackBinop op SI32 M.ISub
+  W.IMul  -> pure $ stackBinop op SI32 M.IMul
+  W.IShl  -> pure $ stackBinop op SI32 M.IShL
+  W.IShrU -> pure $ stackBinop op SI32 M.IShR
+  W.IAnd  -> pure $ stackBinop op SI32 M.IAnd
+  W.IOr   -> pure $ stackBinop op SI32 M.IOr
+  W.IXor  -> pure $ stackBinop op SI32 M.IXor
+  _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
-        translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [M.Instruction])
-        translateIRelOp W.BS64 op = case op of
-          W.IEq  -> pure $ stackRelop op SI64 M.IEq64
-          W.INe  -> pure $ stackRelop op SI64 M.INeq64
-          W.ILtU -> pure $ stackRelop op SI64 M.ILt64
-          W.IGtU -> pure $ stackRelop op SI64 M.IGt64
-          W.ILeU -> pure $ stackRelop op SI64 M.ILte64
-          W.IGeU -> pure $ stackRelop op SI64 M.IGte64
-          _      -> unsupported64Bits op
-        translateIRelOp W.BS32 op = case op of
-          W.IEq  -> pure $ stackRelop op SI32 (M.IEq Nothing)
-          W.INe  -> pure $ stackRelop op SI32 M.INeq
-          W.ILtU -> pure $ stackRelop op SI32 M.ILt
-          W.IGtU -> pure $ stackRelop op SI32 M.IGt
-          W.ILeU -> pure $ stackRelop op SI32 M.ILte
-          W.IGeU -> pure $ stackRelop op SI32 M.IGte
-          _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
+translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [M.Instruction])
+translateIRelOp W.BS64 op = case op of
+  W.IEq  -> pure $ stackRelop op SI64 M.IEq64
+  W.INe  -> pure $ stackRelop op SI64 M.INeq64
+  W.ILtU -> pure $ stackRelop op SI64 M.ILt64
+  W.IGtU -> pure $ stackRelop op SI64 M.IGt64
+  W.ILeU -> pure $ stackRelop op SI64 M.ILte64
+  W.IGeU -> pure $ stackRelop op SI64 M.IGte64
+  _      -> unsupported64Bits op
+translateIRelOp W.BS32 op = case op of
+  W.IEq  -> pure $ stackRelop op SI32 (M.IEq Nothing)
+  W.INe  -> pure $ stackRelop op SI32 M.INeq
+  W.ILtU -> pure $ stackRelop op SI32 M.ILt
+  W.IGtU -> pure $ stackRelop op SI32 M.IGt
+  W.ILeU -> pure $ stackRelop op SI32 M.ILte
+  W.IGeU -> pure $ stackRelop op SI32 M.IGte
+  _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
 
-        -- necessary because of https://github.com/maticnetwork/miden/issues/371
-        -- the stack must be left with exactly 16 entries at the end of the program
-        -- for proof generaton, so we remove a bunch of entries accordingly.
-        stackCleanUp :: [M.Instruction]
-        stackCleanUp = [] -- [M.TruncateStack]
-        -- stackCleanUp n = concat $ replicate n [ M.Swap n', M.Drop ]
-        --   where n' = fromIntegral n
-
-concatMapA :: Applicative f => (a -> f [b]) -> [a] -> f [b]
-concatMapA f = fmap concat . traverse f
+-- necessary because of https://github.com/maticnetwork/miden/issues/371
+-- the stack must be left with exactly 16 entries at the end of the program
+-- for proof generaton, so we remove a bunch of entries accordingly.
+stackCleanUp :: [M.Instruction]
+stackCleanUp = [] -- [M.TruncateStack]
+-- stackCleanUp n = concat $ replicate n [ M.Swap n', M.Drop ]
+--   where n' = fromIntegral n
 
 checkTypes :: [W.ValueType] -> V [StackElem]
 checkTypes = traverse f
@@ -613,3 +595,18 @@ stackBinop op ty xs = assumingPrefix (W.IBinOp sz op) [ty, ty] $ \t -> ([xs], ty
 stackRelop :: W.IRelOp -> StackElem -> M.Instruction -> StackFun [M.Instruction]
 stackRelop op ty xs = assumingPrefix (W.IRelOp sz op) [ty, ty] $ \t -> ([xs], SI32:t)
   where sz = if ty == SI32 then W.BS32 else W.BS64
+
+writeW32s :: [Word8] -> [M.Instruction]
+writeW32s [] = []
+writeW32s (a:b:c:d:xs) =
+  let w = foldl' (.|.) 0 [ shiftL (fromIntegral x) (8 * i)
+                          | (i, x) <- zip [0..] [a,b,c,d]
+                          ]
+  in [ M.Dup 0 -- [addr_u32, addr_u32, ...]
+      , M.Push w -- [w, addr_u32, addr_u32, ...]
+      , M.Swap 1 -- [addr_u32, w, addr_u32, ...]
+      , M.MemStore Nothing -- [w, addr_u32, ...]
+      , M.Drop -- [addr_u32, ...]
+      , M.Push 1, M.IAdd -- [addr_u32+1, ...]
+      ] ++ writeW32s xs
+writeW32s xs = writeW32s $ xs ++ replicate (4-length xs) 0
