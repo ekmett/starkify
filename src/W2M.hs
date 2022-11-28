@@ -1,4 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -9,6 +8,7 @@ import Data.Bifunctor (first)
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
 import Data.Foldable
+import Data.Functor ((<&>))
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, maybeToList)
@@ -23,6 +23,7 @@ import Language.Wasm.Structure qualified as W
 
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
+import Tools (dfs)
 import Validation
 import Control.Monad.Except
 import W2M.Stack
@@ -72,29 +73,24 @@ toMASM checkImports m = do
                   in (xs ++ [n], n+ncells)
 
         callGraph :: Map Text (Set Text)
-        callGraph = Map.unionsWith (<>)
-          [ Map.singleton caller (Set.singleton callee)
+        callGraph = Map.fromListWith (<>) $
+          [ (caller, Set.singleton callee)
           | (caller, Left (W.Function _ _ instrs)) <- Map.toList allFunctionsMap
           , W.Call k <- instrs
           , callee <- maybeToList $ Map.lookup (fromIntegral k) functionNamesMap
           ]
-        enumerate x = x : concatMap enumerate (maybe [] Set.toList (Map.lookup x callGraph))
+
         mainFunName
           | Just (W.StartFunction k) <- W.start m, Just startF <- Map.lookup (fromIntegral k) functionNamesMap =
               startF
           | Just (Left _) <- Map.lookup "main" allFunctionsMap =
               "main"
           | otherwise = error "No start function in WASM module and no 'main', cannot proceed."
-        sortedFuns =
-          let xs = enumerate mainFunName
-              rxs = reverse xs
-              go [] _ = []
-              go (a:as) !visited
-                | a `Set.member` visited = go as visited
-                | otherwise = case Map.lookup a allFunctionsMap of
-                    Just (Left f) -> (a, f) : go as (Set.insert a visited)
+
+        sortedFuns = reverse $ dfs mainFunName callGraph <&> \name ->
+          case Map.lookup name allFunctionsMap of
+                    Just (Left f) -> (name, f)
                     _ -> error "sortedFuns: got Right?!"
-          in go rxs Set.empty
 
         numCells :: W.ValueType -> Word32
         numCells t = case t of

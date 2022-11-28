@@ -20,7 +20,8 @@ library
     Validation,
     W2M,
     W2M.Stack,
-    Count
+    Count,
+    Tools
   hs-source-dirs:     src
   build-depends:      base >=4.13 && <5,
                       bytestring,
