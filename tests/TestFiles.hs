@@ -37,7 +37,7 @@ withCompiledC dotc f = do
     where clangOpts = [ "--target=wasm32"
                       , "--no-standard-libraries"
                       , "-O1"
-                      , "-Wl,--no-entry", "-Wl,--export-all", "-Wl,--strip-all" 
+                      , "-Wl,--no-entry", "-Wl,--export-all", "-Wl,--strip-all"
                       ]
 
 withWasmFromWat

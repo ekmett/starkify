@@ -104,7 +104,7 @@ toMASM checkImports m = do
 
         getDatasInit :: V [M.Instruction]
         getDatasInit = concat <$> traverse getDataInit (W.datas m)
-        
+
         getDataInit :: W.DataSegment -> V [M.Instruction]
         getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
           offset_mexpr <- translateInstrs [] mempty offset_wexpr
@@ -138,7 +138,7 @@ toMASM checkImports m = do
         getGlobalInit (k, g) =
           translateInstrs [] mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
 
-        getGlobalTy k 
+        getGlobalTy k
           | fromIntegral k < length (W.globals m) = case t of
               W.I32 -> SI32
               W.I64 -> SI64
@@ -216,7 +216,7 @@ toMASM checkImports m = do
               -- the stack as it goes. it assumes the value for the first arg
               -- was pushed first, etc, with the value for the last argument
               -- being pushed last and therefore popped first.
-              prelude = reverse $ concat 
+              prelude = reverse $ concat
                 [ case Map.lookup (fromIntegral k) localAddrMap of
                     Just (_t, is) -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
                     _ -> error ("impossible: prelude of procedure " ++ show fname ++ ", local variable " ++ show k ++ " not found?!")
@@ -278,7 +278,7 @@ toMASM checkImports m = do
           _ -> unsupportedMemAlign align i
         translateInstr _ i@(W.I32Store (W.MemArg offset align)) = case align of
           -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
-          2 -> pure $ 
+          2 -> pure $
             assumingPrefix i [SI32, SI32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                  ( [ M.Swap 1
@@ -295,7 +295,7 @@ toMASM checkImports m = do
           _ -> unsupportedMemAlign align i
         translateInstr _ i@(W.I32Load8U (W.MemArg offset align)) = case align of
           0 -> pure $
-            assumingPrefix i [SI32] $ \t -> 
+            assumingPrefix i [SI32] $ \t ->
                  ( [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd                       -- [byte_addr+offset, ...]
                    , M.IDivMod (Just 4)           -- [r, q, ...]
@@ -465,7 +465,7 @@ toMASM checkImports m = do
             )
         translateInstr _ i@(W.SetGlobal k) = case getGlobalTy k of
           SI32 -> pure $ assumingPrefix i [SI32]
-            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k 
+            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k
               , M.Drop
               ]
             ,)
@@ -563,7 +563,7 @@ toMASM checkImports m = do
           _      -> unsupported64Bits op
         translateIBinOp W.BS32 op = case op of
           W.IAdd  -> pure $ stackBinop op SI32 M.IAdd
-          W.ISub  -> pure $ stackBinop op SI32 M.ISub 
+          W.ISub  -> pure $ stackBinop op SI32 M.ISub
           W.IMul  -> pure $ stackBinop op SI32 M.IMul
           W.IShl  -> pure $ stackBinop op SI32 M.IShL
           W.IShrU -> pure $ stackBinop op SI32 M.IShR

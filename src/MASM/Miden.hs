@@ -32,7 +32,7 @@ runMidenProve m = do
     fp <- writeSystemTempFile "starkify-testfile-XXX.masm" (ppMASM m)
     let outFile = fp <.> "out"
         proofFile = fp <.> "proof"
-    (ex, midenout, midenerr) <- 
+    (ex, midenout, midenerr) <-
       readProcessWithExitCode "miden"
         ["prove", "--assembly", fp, "-o", outFile, "-p", proofFile] ""
     -- putStrLn midenout
@@ -48,7 +48,7 @@ runMidenProve m = do
 
 runMidenVerify :: FilePath -> FilePath -> String -> IO (Maybe (ExitCode, String, String))
 runMidenVerify out proof hash = do
-    (ex, mout, merr) <- readProcessWithExitCode "miden" 
+    (ex, mout, merr) <- readProcessWithExitCode "miden"
       ["verify", "-p", proof, "-o", out, "-h", hash] ""
     -- putStrLn mout
     -- putStrLn merr
