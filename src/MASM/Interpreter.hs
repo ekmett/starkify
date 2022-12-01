@@ -3,7 +3,7 @@ module MASM.Interpreter where
 import Data.Bits ( Bits(shiftR, shiftL), (.&.), xor, (.|.) )
 import Data.Word ( Word32, Word64 )
 import MASM
-import Data.Maybe (listToMaybe, fromMaybe)
+import Data.Maybe (fromMaybe)
 import qualified Data.IntMap.Strict as IntMap
 
 type Value = Word32
@@ -103,8 +103,10 @@ step (IfTrue thenB elseB : is) (a:xs) mem =
 step TruncateStack (st, mem) = pure (take 16 st, mem) -- probably not quite what Miden does...
 step i (st, mem) = impossible i st mem
 
-findProc :: ProcName -> Module -> Maybe Proc
+{-
+findProc :: Int -> Module -> Maybe Proc
 findProc name m = listToMaybe $ filter (\p -> procName p == name) (moduleProcs m)
+-}
 
 impossible :: MonadFail m => Instruction -> [Value] -> Mem -> m a
 impossible inst st mem = fail $ unlines

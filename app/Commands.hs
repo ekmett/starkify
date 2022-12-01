@@ -71,7 +71,7 @@ runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ 
   return masmMod
 
   where
-    standardValidator wasm_mod =
+    standardValidator wasm_mod = inContext Typechecker $
       case Wasm.validate wasm_mod of
         Left err -> failsStandardValidation err
         Right _validMod -> return ()
