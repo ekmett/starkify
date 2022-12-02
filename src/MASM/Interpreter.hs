@@ -27,7 +27,7 @@ interpret m = foldM step state0 (programInstrs $ moduleProg m)
   where stack0 = replicate 16 0
         mem0 = Mem IntMap.empty IntMap.empty
         state0 = (stack0, mem0)
-        
+
 foldM :: MonadFail m => (a -> s -> m s) -> s -> [a] -> m s
 foldM f = go
     where go s (x:xs) = do
