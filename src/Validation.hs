@@ -1,6 +1,5 @@
+{-# LANGUAGE OverloadedLists #-}
 module Validation where
-
-import W2M.Stack (StackProblem(..))
 
 import Control.Monad.Validate
 import Control.Monad.State
@@ -12,17 +11,20 @@ import GHC.Natural
 import GHC.Generics
 import Language.Wasm.Structure
 
+import W2M.Stack (StackProblem(..))
+
 import qualified Language.Wasm.Structure as WASM
 import qualified Language.Wasm.Validate  as WASM
 import qualified Data.Text.Lazy as LT
 
 type Id = Int
 
-newtype Validation e a = Validation { getV :: ValidateT e (RWS () () Id) a }
+newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () Id) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
 
 deriving instance (Semigroup e) => MonadState Id (Validation e)
 deriving instance (Semigroup e) => MonadValidate e (Validation e)
+deriving instance MonadReader [Ctx] (Validation e)
 
 id0 :: Id
 id0 = 0
@@ -30,10 +32,29 @@ id0 = 0
 nextId :: (Semigroup e) => Validation e Id
 nextId = state $ \i -> (i, i+1)
 
-bad :: e -> Validation (DList.DList e) a
-bad = refute . pure
+bad :: e -> Validation (DList.DList (Error e)) a
+bad e = do
+  ctxs <- ask
+  refute [Error ctxs e]
 
-data VError
+data Ctx =
+    InFunction (Maybe LT.Text) Natural -- func name, func id
+  | GlobalsInit
+  | DatasInit
+  | ImportsCheck
+  | Typechecker
+  | InInstruction Int (Instruction Natural)
+  | InBlock
+  | InLoop
+  deriving Show
+
+inContext :: Ctx -> Validation e a -> Validation e a
+inContext c m = local (c:) m
+
+withContexts :: [Ctx] -> Validation e a -> Validation e a
+withContexts cs m = local (const cs) m
+
+data ErrorData
   = FPOperation String
   | GlobalMut ValueType
   | NoMain
@@ -44,11 +65,16 @@ data VError
   | UnsupportedMemAlign Natural (WASM.Instruction Natural)
   | NoMultipleMem
   | UnsupportedImport LT.Text LT.Text LT.Text
-  | WasmStackProblem StackProblem
+  | WasmStackProblem (StackProblem [Ctx])
   | UnsupportedArgType WASM.ValueType
   deriving Show
 
-errIdx :: VError -> Int
+data Error e = Error
+  { errCtxs :: [Ctx]
+  , errData :: e
+  } deriving Show
+
+errIdx :: ErrorData -> Int
 errIdx e = case e of
   FPOperation _ -> 0
   GlobalMut _ -> 1
@@ -93,41 +119,63 @@ unsupported64Bits op = bad (Unsupported64Bits $ show op)
 unsupportedMemAlign :: Natural -> WASM.Instruction Natural -> V a
 unsupportedMemAlign alig instr = bad (UnsupportedMemAlign alig instr)
 
-badStackTypeError :: StackProblem -> V a
+badStackTypeError :: StackProblem [Ctx] -> V a
 badStackTypeError e = bad (WasmStackProblem e)
 
 unsupportedArgType :: WASM.ValueType -> V a
 unsupportedArgType t = bad (UnsupportedArgType t)
 
-ppErr :: VError -> String
-ppErr (FPOperation op) = "a floating point operation: " ++ op
-ppErr (GlobalMut t) = "a global mutable variable of type: " ++
+ppErrData :: ErrorData -> String
+ppErrData (FPOperation op) = "unsupported floating point operation: " ++ op
+ppErrData (GlobalMut t) = "unsupported global mutable variable of type: " ++
   (case t of
      I32 -> "32 bits integer"
      I64 -> "64 bits integer"
      F32 -> "32 bits floating point"
      F64 -> "64 bits floating point"
   )
-ppErr NoMain = "missing main function"
-ppErr (StdValidation e) = "a standard validator issue: " ++ show e
-ppErr (WasmFunctionCallIdx i) = "an invalid index in function call: " ++ show i
-ppErr (UnsupportedInstruction i) = "an unsupported WASM instruction: " ++ show i
-ppErr (Unsupported64Bits opstr) = "a 64 bits operation (" ++ opstr ++ ")"
-ppErr (UnsupportedMemAlign a instr) = "an unsupported alignment: " ++ show a ++ " in " ++ show instr
-ppErr NoMultipleMem = "a need for multiple memories"
-ppErr (UnsupportedImport imodule iname idesc) =
-  "an unsupported import: module=" ++ LT.unpack imodule ++
+ppErrData NoMain = "missing main function"
+ppErrData (StdValidation e) = "standard validator issue: " ++ show e
+ppErrData (WasmFunctionCallIdx i) = "invalid index in function call: " ++ show i
+ppErrData (UnsupportedInstruction _i) = "unsupported WASM instruction"
+ppErrData (Unsupported64Bits opstr) = "unsupported 64 bit operation (" ++ opstr ++ ")"
+ppErrData (UnsupportedMemAlign a _instr) = "unsupported alignment: " ++ show a
+ppErrData NoMultipleMem = "multiple memories not supported"
+ppErrData (UnsupportedImport imodule iname idesc) =
+  "unsupported import: module=" ++ LT.unpack imodule ++
   ", name=" ++ LT.unpack iname ++ " (" ++ LT.unpack idesc ++ ")"
-ppErr (WasmStackProblem (StackExpectedGot expected got i)) =
-  "a stack problem: instruction " ++ show i ++ " expected stack prefix " ++ show expected ++
+ppErrData (WasmStackProblem (StackExpectedGot expected got _)) =
+  "stack problem: expected stack prefix " ++ show expected ++
   " but got stack " ++ show (take (length expected) got)
-ppErr (UnsupportedArgType t) =
-  "an unsupported argument type: " ++ show t
+ppErrData (WasmStackProblem (StackEmpty _)) =
+  "stack problem: expected non empty stack"
+ppErrData (UnsupportedArgType t) =
+  "unsupported argument type: " ++ show t
 
-type V = Validation (DList.DList VError)
+ppErr :: Error ErrorData -> [String]
+ppErr e =
+  [ red "error: " ++ ppErrData (errData e)
+  ] ++
+  [     "  ...  " ++ ppErrCtx c
+  | c <- errCtxs e
+  ] ++ [""]
+
+  where red s = "\ESC[0;31m" ++ s ++ "\ESC[0m"
+
+ppErrCtx :: Ctx -> String
+ppErrCtx (InFunction mname i) = "of function " ++ show i ++ maybe "" (\name -> " (" ++ LT.unpack name ++ ")") mname
+ppErrCtx DatasInit = "in data section"
+ppErrCtx GlobalsInit = "in globals initialisation"
+ppErrCtx ImportsCheck = "in imports"
+ppErrCtx Typechecker = "in typechecking"
+ppErrCtx (InInstruction k i) = "in instruction #" ++ show k ++ ": " ++ take 100 (show i) ++ "  ..."
+ppErrCtx InBlock = "of block"
+ppErrCtx InLoop = "of loop"
+
+type V = Validation (DList.DList (Error ErrorData))
 
 runValidation :: V a -> IO a
-runValidation (Validation e) = case runRWS (runValidateT e) () id0 of
-  (Left errs, _i, _w) -> error . unlines $
-    "found: " : fmap (\err -> " - " ++ ppErr err) (sortOn errIdx $ DList.toList errs)
+runValidation (Validation e) = case runRWS (runValidateT e) [] id0 of
+  (Left errs, _i, _w) -> error . unlines . ("":) $
+    concatMap ppErr (sortOn (errIdx . errData) $ DList.toList errs)
   (Right a, _i, _w) -> return a

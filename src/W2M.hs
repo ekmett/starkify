@@ -1,20 +1,23 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE BlockArguments #-}
 
 module W2M where
 
 import Data.Bifunctor (first)
+import Control.Applicative
+import Control.Monad.Except
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
 import Data.Foldable
 import Data.Functor ((<&>))
 import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Maybe (catMaybes, maybeToList)
+import Data.Maybe (catMaybes)
 import Data.Set (Set)
 import Data.Set qualified as Set
-import Data.Text.Lazy (Text, replace)
+import Data.Text.Lazy (Text)
 import Data.Vector.Unboxed (Vector)
 import Data.Vector.Unboxed qualified as V
 import Data.Word (Word8, Word32)
@@ -25,13 +28,17 @@ import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
 import Tools (dfs)
 import Validation
-import Control.Monad.Except
-import W2M.Stack
-import Control.Applicative
+import W2M.Stack (StackElem(..), StackType, StackProblem(..), StackFun)
+import qualified W2M.Stack as WStack
+
+import qualified Data.Text.Lazy  as T
+import Control.Monad.Reader
 
 type WasmAddr = Natural
 type MasmAddr = Word32
 type LocalAddrs = Map WasmAddr (StackElem, [MasmAddr])
+type FunId = Natural
+type FunName = Text
 
 data WasmImportedFun = WIF
   { wifModule :: Text
@@ -39,15 +46,12 @@ data WasmImportedFun = WIF
   , wifTy     :: W.FuncType
   } deriving (Eq, Show)
 
-funName :: Id -> String
-funName i = "fun" ++ show i
-
 toMASM :: Bool -> W.Module -> V M.Module
 toMASM checkImports m = do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
-  when checkImports $ checkImps (W.imports m)
-  globalsInit <- getGlobalsInit
-  datasInit <- getDatasInit
+  when checkImports $ inContext ImportsCheck $ checkImps (W.imports m)
+  globalsInit <- inContext GlobalsInit getGlobalsInit
+  datasInit <- inContext DatasInit getDatasInit
 
   M.Module ["std::sys", "std::math::u64"]
     <$> fmap catMaybes (traverse fun2MASM sortedFuns)
@@ -71,25 +75,24 @@ toMASM checkImports m = do
                                  W.Mut   t -> numCells t
                   in (xs ++ [n], n+ncells)
 
-        callGraph :: Map Text (Set Text)
+        callGraph :: Map FunId (Set FunId)
         callGraph = Map.fromListWith (<>) $
           [ (caller, Set.singleton callee)
-          | (caller, Left (W.Function _ _ instrs)) <- Map.toList allFunctionsMap
-          , W.Call k <- instrs
-          , callee <- maybeToList $ Map.lookup (fromIntegral k) functionNamesMap
+          | (caller, (_mname, Left (W.Function {body}))) <- Map.toList allFunctionsMap
+          , W.Call callee <- body
           ]
-
-        mainFunName
-          | Just (W.StartFunction k) <- W.start m, Just startF <- Map.lookup (fromIntegral k) functionNamesMap =
-              startF
-          | Just (Left _) <- Map.lookup "main" allFunctionsMap =
-              "main"
+        -- enumerate x = x : concatMap enumerate [ y | y <- maybe [] Set.toList (Map.lookup x callGraph) ]
+        mainFunId
+          | Just (W.StartFunction k) <- W.start m = k
+          | Just mainId <- Map.lookup "main" functionIdsMap = mainId
           | otherwise = error "No start function in WASM module and no 'main', cannot proceed."
 
-        sortedFuns = reverse $ dfs mainFunName callGraph <&> \name ->
+        sortedFuns :: [(FunId, Maybe FunName, W.Function)]
+        sortedFuns = reverse $ catMaybes $ dfs mainFunId callGraph <&> \name ->
           case Map.lookup name allFunctionsMap of
-                    Just (Left f) -> (name, f)
-                    _ -> error "sortedFuns: got Right?!"
+                    Just (mname, Left f) -> Just (name, mname, f)
+                    -- TODO(Matthias): Do we need to handle problems more carefully here?
+                    _ -> Nothing
 
         numCells :: W.ValueType -> Word32
         numCells t = case t of
@@ -129,57 +132,59 @@ toMASM checkImports m = do
                         W.Const ct -> ct
                         W.Mut mt -> mt
 
-        importedName modl nm = "imported___" <> modl <> "_" <> nm
+        importedName modl nm = modl <> "." <> nm
         importedFuns = [ (mdl, nm, W.types m !! fromIntegral tyidx)
                        | W.Import mdl nm (W.ImportFunc tyidx) <- W.imports m
                        ]
 
-        allFuns :: [(Natural, Text, Either W.Function WasmImportedFun)]
-        allFuns = zipWith (\i (n, f) -> (i, n, f)) [0..] $
-          map (\(mdl, nm, t) -> (importedName mdl nm, Right $ WIF mdl nm t)) importedFuns ++
-          [ (fixName fname, Left $ W.functions m !! (fromIntegral i - length importedFuns))
-          | W.Export fname (W.ExportFunc i) <- W.exports m
+        allFuns :: [(FunId, Maybe FunName, Either W.Function WasmImportedFun)]
+        allFuns =
+          zipWith (\k (mdl, nm, t) -> (k, Just (importedName mdl nm), Right $ WIF mdl nm t))
+                  [0..]
+                  importedFuns ++
+          [ (fromIntegral k, lkpFunName (fromIntegral k), Left f)
+          | (k, f) <- zip [(length importedFuns)..] (W.functions m)
           ]
 
-        allFunctionsMap :: Map Text (Either W.Function WasmImportedFun)
-        allFunctionsMap = Map.fromList [ (n, f) | (_, n, f) <- allFuns ]
+        lkpFunName i = go (W.exports m)
+          where go [] = Nothing
+                go (e:es) = case e of
+                  W.Export name (W.ExportFunc j)
+                    | i == j -> Just name
+                  _ -> go es
 
-{-
-        functionsMap :: Map Text W.Function
-        functionsMap = Map.fromList
-          [ ( fixName fname
-          , if fromIntegral i < length (W.functions m)
-            then W.functions m !! fromIntegral i
-            else error ("functionsMap: index too large (i=" ++ show i ++ ", len=" ++ show (length (W.functions m)) ++ ")")
-          )
-          | W.Export fname (W.ExportFunc i) <- W.exports m
-          ]
--}
-        emptyFunctions :: Set Text
+        allFunctionsMap :: Map FunId (Maybe FunName, Either W.Function WasmImportedFun)
+        allFunctionsMap = Map.fromList [ (i, (n, f)) | (i, n, f) <- allFuns ]
+
+        emptyFunctions :: Set FunId
         emptyFunctions = Set.fromList
-          [ fname
-          | (fname, Left (W.Function _ _ [])) <- Map.toList allFunctionsMap
+          [ fid
+          | (fid, (_, Left (W.Function _ _ []))) <- Map.toList allFunctionsMap
           ]
 
-        functionNamesMap :: Map Int Text
+        functionNamesMap :: Map FunId FunName
         functionNamesMap = Map.fromList
-          [ (fromIntegral i, fname)
-          | (i, fname, _t) <- allFuns
+          [ (i, fname)
+          | (i, Just fname, _t) <- allFuns
           ]
 
-        functionTypesMap :: Map Text W.FuncType
-        functionTypesMap =
-          fmap (\case
-                  Left (W.Function tyIdx _ _) -> W.types m !! fromIntegral tyIdx
-                  Right (WIF _mdl _nm t) -> t
-               ) allFunctionsMap
+        functionIdsMap :: Map FunName FunId
+        functionIdsMap = Map.fromList . map swap . Map.toList $ functionNamesMap
+          where swap (a, b) = (b, a)
 
-        fixName = replace "__" "zz__"
+        functionTypesMap :: Map FunId W.FuncType
+        functionTypesMap = allFunctionsMap <&> \case
+                  (_, Left (W.Function tyIdx _ _)) -> W.types m !! fromIntegral tyIdx
+                  (_, Right (WIF _mdl _nm t)) -> t
 
-        fun2MASM :: (Text, W.Function) -> V (Maybe M.Proc)
-        fun2MASM (_fname, W.Function _         _         []) = return Nothing
-        fun2MASM (fname, W.Function _funTyIdx localsTys body) = do
-          let wasm_args = maybe [] W.params (Map.lookup fname functionTypesMap)
+        fixName t
+          | Just t' <- T.stripPrefix "__" t = "zz__" <> t'
+          | otherwise                       = t
+
+        fun2MASM :: (FunId, Maybe Text, W.Function) -> V (Maybe M.Proc)
+        fun2MASM (_funid, _mfname, W.Function _         _         []) = return Nothing
+        fun2MASM (funid, mfname, W.Function _funTyIdx localsTys body) = inContext (InFunction mfname (fromIntegral funid)) $ do
+          let wasm_args = maybe [] W.params (Map.lookup funid functionTypesMap)
               wasm_locals = localsTys
 
               localAddrMap :: LocalAddrs
@@ -199,13 +204,12 @@ toMASM checkImports m = do
               prelude = reverse $ concat
                 [ case Map.lookup (fromIntegral k) localAddrMap of
                     Just (_t, is) -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
-                    _ -> error ("impossible: prelude of procedure " ++ show fname ++ ", local variable " ++ show k ++ " not found?!")
+                    _ -> error ("impossible: prelude of procedure " ++ show (funid, mfname) ++ ", local variable " ++ show k ++ " not found?!")
                 | k <- [0..(length wasm_args - 1)]
                 ]
 
-          argsStack <- checkTypes wasm_args
-          instrs <- translateInstrs argsStack localAddrMap body
-          return $ Just (M.Proc fname (fromIntegral nlocalCells) (prelude ++ instrs))
+          instrs <- translateInstrs [] localAddrMap body
+          return $ Just (M.Proc (fromIntegral funid) (fmap fixName mfname) (fromIntegral nlocalCells) (prelude ++ instrs))
 
 
         translateInstrs :: StackType -> LocalAddrs -> W.Expression -> V [M.Instruction]
@@ -215,35 +219,39 @@ toMASM checkImports m = do
           -- reporting logic that tracks the type of the stack and allows 'translateInstr' to
           -- inspect the stack to bail out if they're not right and otherwise
           -- use the types of the stack values to drive the MASM code generation.
-          stackFuns <- traverse (translateInstr locals) wasmInstrs
-          case foldStackFuns stack0 stackFuns of
-            Left e -> badStackTypeError e
+          stackFuns <- sequenceA $
+            zipWith (\k inst -> inContext (InInstruction k inst) $ translateInstr locals inst) [1..] wasmInstrs
+          case WStack.foldStackFuns stack0 stackFuns of
+            Left e@(StackExpectedGot _ _ ctxs) -> withContexts ctxs (badStackTypeError e)
+            Left e@(StackEmpty ctxs) -> withContexts ctxs (badStackTypeError e)
             Right (a, _finalT) -> return (concat a)
+            -- TODO: make sure finalT is the function's return type?
 
-        translateInstr :: LocalAddrs -> W.Instruction Natural -> V (StackFun [M.Instruction])
-        translateInstr _ inst@(W.Call i) = case Map.lookup (fromIntegral i) functionNamesMap of
+        translateInstr :: LocalAddrs -> W.Instruction Natural -> V (StackFun [Ctx] [M.Instruction])
+        translateInstr _ (W.Call i) = case Map.lookup i functionTypesMap of
+          Just (W.FuncType params res) -> do
+              let mname = Map.lookup (fromIntegral i) functionNamesMap
+              params' <- checkTypes params
+              res' <- checkTypes res
+              let procname = maybe (T.pack $ "func" ++ show i) fixName mname
+                  instrs =
+                    if Set.member i emptyFunctions
+                      then concat [ if t == SI64 then [ M.Drop, M.Drop ] else [ M.Drop ]
+                                  | t <- params'
+                                  ]
+                      else [M.Exec procname]
+              assumingPrefix (reverse params') $ \t -> (instrs, res' ++ t)
           Nothing -> badWasmFunctionCallIdx (fromIntegral i)
-          Just fname
-            | fname `Set.notMember` emptyFunctions ->
-                case Map.lookup fname functionTypesMap of
-                  Just (W.FuncType params res) -> do
-                    params' <- checkTypes params
-                    res' <- checkTypes res
-                    return $ assumingPrefix inst params' $ \t -> ([M.Exec fname], res' ++ t)
-                  Nothing -> badWasmFunctionCallIdx (fromIntegral i)
-
-            | otherwise -> pure (pure [])
-        translateInstr _ (W.I32Const w32) = pure $ noPrefix $ \t -> ([M.Push w32], SI32:t)
+        translateInstr _ (W.I32Const w32) = noPrefix $ \t -> ([M.Push w32], SI32:t)
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
-        translateInstr _ i@W.I32Eqz = pure $
-          assumingPrefix i [SI32] $ \t -> ([M.IEq (Just 0)], SI32:t)
+        translateInstr _ W.I32Eqz =
+          assumingPrefix [SI32] $ \t -> ([M.IEq (Just 0)], SI32:t)
         translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
-        translateInstr _ i@W.Select = return $
-          assumingPrefix i [SI32, SI32, SI32] $ \t ->
+        translateInstr _ W.Select =
+          assumingPrefix [SI32, SI32, SI32] $ \t ->
             ([M.IfTrue [M.Drop] [M.Swap 1, M.Drop]], SI32:t)
-        translateInstr _ i@(W.I32Load (W.MemArg offset align)) = case align of
-          2 -> pure $
-            assumingPrefix i [SI32] $ \t ->
+        translateInstr _ (W.I32Load (W.MemArg offset _align)) =
+            assumingPrefix [SI32] $ \t ->
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                  ( [ M.Push 4
                    , M.IDiv
@@ -255,11 +263,9 @@ toMASM checkImports m = do
                    ]
                  , SI32:t
                  )
-          _ -> unsupportedMemAlign align i
-        translateInstr _ i@(W.I32Store (W.MemArg offset align)) = case align of
+        translateInstr _ (W.I32Store (W.MemArg offset _align)) =
           -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
-          2 -> pure $
-            assumingPrefix i [SI32, SI32]
+            assumingPrefix [SI32, SI32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                  ( [ M.Swap 1
                    , M.Push 4
@@ -272,10 +278,8 @@ toMASM checkImports m = do
                    , M.Drop
                    ]
                  ,)
-          _ -> unsupportedMemAlign align i
-        translateInstr _ i@(W.I32Load8U (W.MemArg offset align)) = case align of
-          0 -> pure $
-            assumingPrefix i [SI32] $ \t ->
+        translateInstr _ (W.I32Load8U (W.MemArg offset _align)) =
+            assumingPrefix [SI32] $ \t -> 
                  ( [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd                       -- [byte_addr+offset, ...]
                    , M.IDivMod (Just 4)           -- [r, q, ...]
@@ -303,8 +307,24 @@ toMASM checkImports m = do
                    ]
                  , SI32:t
                  )
-          _ -> unsupportedMemAlign align i
-        translateInstr _ i@(W.I32Store8 (W.MemArg offset align)) = case align of
+        translateInstr a (W.I32Load8S mem) = do
+          loadInstrs <- translateInstr a (W.I32Load8U mem)
+          sigInstrs <- assumingPrefix [SI32] $ \t -> -- [v, ...]
+                 ( [ M.Dup 0                         -- [v, v, ...]
+                   , M.Push 128, M.IGte              -- [v >= 128, v, ...]
+                   , M.IfTrue                        -- [v, ...]
+                       [ M.Push 255, M.Swap 1        -- [v, 255, ...]
+                       , M.ISub, M.Push 1, M.IAdd    -- [255 - v + 1, ...]
+                       , M.Push 4294967295           -- [4294967295, 255 - v + 1, ...]
+                       , M.Swap 1, M.ISub            -- [4294967295 - (255 - v + 1), ...]
+                       , M.Push 1, M.IAdd            -- [4294967295 - (255 - v + 1) + 1, ...]
+                       ]
+                       [] -- if the 32 bits of v encode a positive 8 bits number, nothing to do
+                   ]
+                 , SI32:t
+                 )
+          return $ (++) <$> loadInstrs <*> sigInstrs
+        translateInstr _ (W.I32Store8 (W.MemArg offset _align)) =
           -- we have an 8-bit value stored in an i32, e.g (lowest on the left):
           -- i   = abcdefgh|00000000|00000000|00000000
           -- there's an i32 value stored at addr q, e.g:
@@ -317,8 +337,7 @@ toMASM checkImports m = do
           -- setting free the relevant bits in v:
           -- v'  = xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
           -- and storing v' | i'
-          0 -> pure $
-            assumingPrefix i [SI32, SI32]
+            assumingPrefix [SI32, SI32]
                  ( [ M.Swap 1                     -- [byte_addr, i, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
                    , M.IAdd                       -- [byte_addr+offset, i, ...]
@@ -345,10 +364,8 @@ toMASM checkImports m = do
                    , M.Drop                       -- [...]
                    ]
                  ,)
-          _ -> unsupportedMemAlign align i
-        translateInstr _ i@(W.I32Load16U (W.MemArg offset align)) = case align of
-          1 -> pure $
-            assumingPrefix i [SI32] $ \t ->
+        translateInstr _ (W.I32Load16U (W.MemArg offset _align)) =
+            assumingPrefix [SI32] $ \t ->
                  ( [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd                       -- [byte_addr+offset, ...]
                    , M.IDivMod (Just 4)           -- [r, q, ...]
@@ -376,12 +393,10 @@ toMASM checkImports m = do
                    ]
                  , SI32:t
                  )
-          _ -> unsupportedMemAlign align i
-        translateInstr _ i@(W.I32Store16 (W.MemArg offset align))
+        translateInstr _ (W.I32Store16 (W.MemArg offset _align))
           | mod offset 4 == 3 = error "offset = 3!"
-          | otherwise   = case align of
-          1 -> pure $
-            assumingPrefix i [SI32, SI32]
+          | otherwise   =
+            assumingPrefix [SI32, SI32]
                  ( [ M.Swap 1                     -- [byte_addr, i, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
                    , M.IAdd                       -- [byte_addr+offset, i, ...]
@@ -408,16 +423,14 @@ toMASM checkImports m = do
                    , M.Drop                       -- [...]
                    ]
                  ,)
-          _ -> unsupportedMemAlign align i
-
         -- locals
         translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
-          Just (loct, is) -> pure $ noPrefix $ \t -> (map M.LocLoad is, loct:t)
+          Just (loct, is) -> noPrefix $ \t -> (map M.LocLoad is, loct:t)
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
 
-        translateInstr localAddrs i@(W.SetLocal k) = case Map.lookup k localAddrs of
-          Just (loct, as) -> pure $
-            assumingPrefix i [loct]
+        translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
+          Just (loct, as) ->
+            assumingPrefix [loct]
               ( concat
                   [ [ M.LocStore a
                     , M.Drop
@@ -432,24 +445,24 @@ toMASM checkImports m = do
 
         -- globals
         translateInstr _ (W.GetGlobal k) = case getGlobalTy k of
-          SI32 -> pure $ noPrefix $ \t ->
+          SI32 -> noPrefix $ \t ->
             ( [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
               ]
             , SI32:t
             )
-          SI64 -> pure $ noPrefix $ \t ->
+          SI64 -> noPrefix $ \t ->
             ( [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
               , M.MemLoad . Just $ (globalsAddrMap V.! fromIntegral k) + 1
               ]
             , SI64:t
             )
-        translateInstr _ i@(W.SetGlobal k) = case getGlobalTy k of
-          SI32 -> pure $ assumingPrefix i [SI32]
-            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k
+        translateInstr _ (W.SetGlobal k) = case getGlobalTy k of
+          SI32 -> assumingPrefix [SI32]
+            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k 
               , M.Drop
               ]
             ,)
-          SI64 -> pure $ assumingPrefix i [SI64]
+          SI64 -> assumingPrefix [SI64]
             ( [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
               , M.Drop
               , M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k)
@@ -459,14 +472,14 @@ toMASM checkImports m = do
 
         -- https://maticnetwork.github.io/miden/user_docs/stdlib/math/u64.html
         -- 64 bits integers are emulated by separating the high and low 32 bits.
-        translateInstr _ (W.I64Const k) = pure $ noPrefix $ \t ->
+        translateInstr _ (W.I64Const k) = noPrefix $ \t ->
           ( [ M.Push k_lo
             , M.Push k_hi
             ]
           , SI64:t
           )
           where FakeW64 k_hi k_lo = toFakeW64 k
-        translateInstr _ i@(W.I64Load (W.MemArg offset _align))
+        translateInstr _ (W.I64Load (W.MemArg offset _align))
           | mod offset 4 /= 0 = error "i64 load"
           | otherwise         =
           -- we need to turn [byte_addr, ...] of wasm into
@@ -475,7 +488,7 @@ toMASM checkImports m = do
           -- to get lo and hi 32 bits of i64 value respectively.
           --
           -- u32_addr = (byte_addr / 4) + (offset / 4) + memBeginning
-          pure $ assumingPrefix i [SI32] $ \t ->
+          assumingPrefix [SI32] $ \t ->
             ( [ M.Push 4, M.IDiv
               , M.Push (fromIntegral offset `div` 4)
               , M.IAdd
@@ -488,7 +501,7 @@ toMASM checkImports m = do
               ]
             , SI64:t
             )
-        translateInstr _ i@(W.I64Store (W.MemArg offset _align))
+        translateInstr _ (W.I64Store (W.MemArg offset _align))
           | mod offset 4 /= 0 = error "i64 store"
           | otherwise   =
           -- we need to turn [val_hi, val_low, byte_addr, ...] of wasm into
@@ -496,7 +509,7 @@ toMASM checkImports m = do
           -- and the call mem_store twice
           -- (once at u32_addr, once at u32_addr+1)
           -- to get hi and lo 32 bits of i64 value.
-          pure $ assumingPrefix i [SI64, SI32]
+          assumingPrefix [SI64, SI32]
             ( [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
               , M.Push 4, M.IDiv
               , M.Push (fromIntegral offset `div` 4)
@@ -512,62 +525,127 @@ toMASM checkImports m = do
               , M.Drop -- [...]
               ]
             ,)
+        translateInstr _ (W.I64Store8 (W.MemArg offset _align)) =
+          -- we have an 8-bit value stored in an i64 (two 32 bits in Miden land),
+          -- e.g (lowest on the left):
+          -- i   = abcdefgh|00000000|00000000|00000000||00000000|00000000|00000000|00000000
+          -- there's an i64 value stored at addr q, e.g:
+          -- v   = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx
+          -- and we want to update the 8*r to 8*r+7 bits of v with
+          -- the first 8 bits of i, so in the example ending with:
+          -- res = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|abcdefgh|xxxxxxxx|xxxxxxxx
+          -- we get there by shifting i by 8*r bits to the "left":
+          -- i'  = 00000000|00000000|00000000|00000000||00000000|abcdefgh|00000000|00000000
+          -- setting free the relevant bits in v:
+          -- v'  = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
+          -- and storing v' | i'
+            assumingPrefix [SI32, SI64]           -- [i_hi, i_lo, byte_addr, ...]
+                 ( [ M.Swap 1 , M.Swap 2          -- [byte_addr, i_hi, i_lo, ...]
+                   , M.Push (fromIntegral offset) -- [offset, byte_addr, i_hi, i_lo, ...]
+                   , M.IAdd                       -- [byte_addr+offset, i_hi, i_lo, ...]
+                   , M.IDivMod (Just 4)           -- [r, q, i_hi, i_lo, ...]
+                                                  -- where byte_addr+offset = 4*q + r
+                   , M.Push 8, M.IMul             -- [8*r, q, i_hi, i_lo, ...]
+                   , M.Dup 0                      -- [8*r, 8*r, q, i_hi, i_lo, ...]
+                   , M.Push 255, M.Swap 1         -- [8*r, 255, 8*r, q, i_hi, i_lo, ...]
+                   , M.IShL, M.INot               -- [mask_hi, mask_lo, 8*r, q, i_hi, i_lo, ...]
+                   , M.Swap 2                     -- [8*r, mask_lo, mask_hi, q, i_hi, i_lo, ...]
+                   , M.Swap 1                     -- [mask_lo, 8*r, mask_hi, q, i_hi, i_lo, ...]
+                   , M.Swap 3                     -- [q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.Push memBeginning
+                   , M.IAdd                       -- [memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.Dup 0, M.Dup 0             -- [memBeginning+q, memBeginning+q, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.MemLoad Nothing            -- [v_lo, memBeginning+q, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.Swap 1, M.Push 1, M.IAdd   -- [memBeginning+q+1, v_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.MemLoad Nothing            -- [v_hi, v_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.Dup 5, M.Dup 5             -- [mask_hi, mask_lo, v_hi, v_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.IAnd64                     -- [v'_hi, v'_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.Swap 7, M.Swap 1           -- [v'_lo, i_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, v'_hi, ...]
+                   , M.Swap 6                     -- [i_hi, i_lo, memBeginning+q, 8*r, mask_hi, mask_lo, v'_lo, v'_hi, ...]
+                   , M.Dup 3, M.IShL64            -- [i'_hi, i'_lo, memBeginning+q, 8*r, mask_hi, mask_lo, v'_lo, v'_hi, ...]
+                   , M.Swap 2, M.Swap 1           -- [i'_lo, memBeginning+q, i'_hi, 8*r, mask_hi, mask_lo, v'_lo, v'_hi, ...]
+                   , M.Swap 3                     -- [8*r, memBeginning+q, i'_hi, i'_lo, mask_hi, mask_lo, v'_lo, v'_hi, ...]
+                   , M.Swap 6, M.Swap 1           -- [memBeginning+q, v'_lo, i'_hi, i'_lo, mask_hi, mask_lo, 8*r, v'_hi, ...]
+                   , M.Swap 7                     -- [v'_hi, v'_lo, i'_hi, i'_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
+                   , M.IOr64                      -- [res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
+                   , M.Dup 5                      -- [memBeginning+q, res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
+                   , M.Push 1, M.IAdd             -- [memBeginning+q+1, res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
+                   , M.MemStore Nothing, M.Drop   -- [res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
+                   , M.MoveUp 4                   -- [memBeginning+q, res_lo, mask_hi, mask_lo, 8*r, ...]
+                   , M.MemStore Nothing, M.Drop   -- [mask_hi, mask_lo, 8*r, ...]
+                   , M.Drop, M.Drop, M.Drop       -- [...]
+                   ]
+                 ,)
+        -- TODO: ^^^^^^ use M.MoveUp more!
+
 
         -- turning an i32 into an i64 in wasm corresponds to pushing 0 on the stack.
         -- let's call the i32 'i'. before executing this, the stack looks like [i, ...],
         -- and after like: [0, i, ...].
         -- Since an i64 'x' on the stack is in Miden represented as [x_hi, x_lo], pushing 0
         -- effectively grabs the i32 for the low bits and sets the high 32 bits to 0.
-        translateInstr _ i@W.I64ExtendUI32 = pure $
-          assumingPrefix i [SI32] $ \t -> ([M.Push 0], SI64:t)
-        translateInstr _ i@W.I64Eqz = pure $
-          assumingPrefix i [SI64] $ \t -> ([M.IEqz64], SI32:t)
-        translateInstr _ W.Drop = pure $ withPrefix $
+        translateInstr _ W.I64ExtendUI32 = assumingPrefix [SI32] $ \t -> ([M.Push 0], SI64:t)
+        -- similarly, wrap drops the high 32 bits, which amounts to dropping the tip of the stack
+        -- in miden, going from [v_hi, v_lo, ...] to [v_lo, ...]
+        translateInstr _ W.I32WrapI64 = assumingPrefix [SI64] $ \t -> ([M.Drop], SI32:t)
+
+        translateInstr _ W.I64Eqz = assumingPrefix [SI64] $ \t -> ([M.IEqz64], SI32:t)
+
+        translateInstr _ W.Drop = withPrefix
           -- is the top of the WASM stack an i32 or i64, at this point in time?
           -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
           \case
             SI32 -> return [M.Drop]
             SI64 -> return [M.Drop, M.Drop]
 
-        translateInstr a i@(W.Block _ is) = traverse (translateInstr a) is *> unsupportedInstruction i
-        translateInstr a i@(W.Loop _ is) = traverse (translateInstr a) is *> unsupportedInstruction i
+        translateInstr a i@(W.Block _ is) =
+          inContext InBlock (translateInstrs [] a is) *>
+          unsupportedInstruction i
+        translateInstr a i@(W.Loop _ is) =
+          inContext InLoop (translateInstrs [] a is) *>
+          unsupportedInstruction i
         translateInstr _ i = unsupportedInstruction i
 
-translateIBinOp :: W.BitSize -> W.IBinOp -> V (StackFun [M.Instruction])
+translateIBinOp :: W.BitSize -> W.IBinOp -> V (StackFun [Ctx] [M.Instruction])
 -- TODO: the u64 module actually provides implementations of many binops for 64 bits
 -- values.
 translateIBinOp W.BS64 op = case op of
-  W.IAdd -> pure $ stackBinop op SI64 M.IAdd64
-  W.ISub -> pure $ stackBinop op SI64 M.ISub64
-  W.IMul -> pure $ stackBinop op SI64 M.IMul64
-  _      -> unsupported64Bits op
+  W.IAdd  -> stackBinop SI64 M.IAdd64
+  W.ISub  -> stackBinop SI64 M.ISub64
+  W.IMul  -> stackBinop SI64 M.IMul64
+  W.IShl  -> stackBinop SI64 M.IShL64
+  W.IShrU -> stackBinop SI64 M.IShR64
+  W.IOr   -> stackBinop SI64 M.IOr64
+  W.IAnd  -> stackBinop SI64 M.IAnd64
+  W.IXor  -> stackBinop SI64 M.IXor64
+  _       -> unsupported64Bits op
 translateIBinOp W.BS32 op = case op of
-  W.IAdd  -> pure $ stackBinop op SI32 M.IAdd
-  W.ISub  -> pure $ stackBinop op SI32 M.ISub
-  W.IMul  -> pure $ stackBinop op SI32 M.IMul
-  W.IShl  -> pure $ stackBinop op SI32 M.IShL
-  W.IShrU -> pure $ stackBinop op SI32 M.IShR
-  W.IAnd  -> pure $ stackBinop op SI32 M.IAnd
-  W.IOr   -> pure $ stackBinop op SI32 M.IOr
-  W.IXor  -> pure $ stackBinop op SI32 M.IXor
+  W.IAdd  -> stackBinop SI32 M.IAdd
+  W.ISub  -> stackBinop SI32 M.ISub 
+  W.IMul  -> stackBinop SI32 M.IMul
+  W.IShl  -> stackBinop SI32 M.IShL
+  W.IShrU -> stackBinop SI32 M.IShR
+  W.IAnd  -> stackBinop SI32 M.IAnd
+  W.IOr   -> stackBinop SI32 M.IOr
+  W.IXor  -> stackBinop SI32 M.IXor
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
-translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [M.Instruction])
+translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [Ctx] [M.Instruction])
 translateIRelOp W.BS64 op = case op of
-  W.IEq  -> pure $ stackRelop op SI64 M.IEq64
-  W.INe  -> pure $ stackRelop op SI64 M.INeq64
-  W.ILtU -> pure $ stackRelop op SI64 M.ILt64
-  W.IGtU -> pure $ stackRelop op SI64 M.IGt64
-  W.ILeU -> pure $ stackRelop op SI64 M.ILte64
-  W.IGeU -> pure $ stackRelop op SI64 M.IGte64
+  W.IEq  -> stackRelop SI64 M.IEq64
+  W.INe  -> stackRelop SI64 M.INeq64
+  W.ILtU -> stackRelop SI64 M.ILt64
+  W.IGtU -> stackRelop SI64 M.IGt64
+  W.ILeU -> stackRelop SI64 M.ILte64
+  W.IGeU -> stackRelop SI64 M.IGte64
   _      -> unsupported64Bits op
 translateIRelOp W.BS32 op = case op of
-  W.IEq  -> pure $ stackRelop op SI32 (M.IEq Nothing)
-  W.INe  -> pure $ stackRelop op SI32 M.INeq
-  W.ILtU -> pure $ stackRelop op SI32 M.ILt
-  W.IGtU -> pure $ stackRelop op SI32 M.IGt
-  W.ILeU -> pure $ stackRelop op SI32 M.ILte
-  W.IGeU -> pure $ stackRelop op SI32 M.IGte
+  W.IEq  -> stackRelop SI32 (M.IEq Nothing)
+  W.INe  -> stackRelop SI32 M.INeq
+  W.ILtU -> stackRelop SI32 M.ILt
+  W.IGtU -> stackRelop SI32 M.IGt
+  W.ILeU -> stackRelop SI32 M.ILte
+  W.IGeU -> stackRelop SI32 M.IGte
   _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
 
 -- necessary because of https://github.com/maticnetwork/miden/issues/371
@@ -584,12 +662,27 @@ checkTypes = traverse f
         f W.I64 = pure SI64
         f t     = unsupportedArgType t
 
-stackBinop :: W.IBinOp -> StackElem -> M.Instruction -> StackFun [M.Instruction]
-stackBinop op ty xs = assumingPrefix (W.IBinOp sz op) [ty, ty] $ \t -> ([xs], ty:t)
-  where sz = if ty == SI32 then W.BS32 else W.BS64
-stackRelop :: W.IRelOp -> StackElem -> M.Instruction -> StackFun [M.Instruction]
-stackRelop op ty xs = assumingPrefix (W.IRelOp sz op) [ty, ty] $ \t -> ([xs], SI32:t)
-  where sz = if ty == SI32 then W.BS32 else W.BS64
+stackBinop :: StackElem -> M.Instruction -> V (StackFun [Ctx] [M.Instruction])
+stackBinop ty xs = assumingPrefix [ty, ty] $ \t -> ([xs], ty:t)
+
+stackBinop' :: StackElem -> M.Instruction -> V (StackFun [Ctx] [M.Instruction])
+stackBinop' ty xs = assumingPrefix [ty, ty] $ \t -> ([xs], ty:t)
+
+stackRelop :: StackElem -> M.Instruction -> V (StackFun [Ctx] [M.Instruction])
+stackRelop ty xs = assumingPrefix [ty, ty] $ \t -> ([xs], SI32:t)
+
+assumingPrefix :: StackType -> (StackType -> (a, StackType)) -> V (StackFun [Ctx] a)
+assumingPrefix xs f = do
+  ctxs <- ask
+  return $ WStack.assumingPrefix ctxs xs f
+
+withPrefix :: (StackElem -> StackFun [Ctx] a) -> V (StackFun [Ctx] a)
+withPrefix f = do
+  ctxs <- ask
+  return $ WStack.withPrefix ctxs f
+
+noPrefix :: (StackType -> (a, StackType)) -> V (StackFun ctx a)
+noPrefix = pure . WStack.noPrefix
 
 writeW32s :: [Word8] -> [M.Instruction]
 writeW32s [] = []
