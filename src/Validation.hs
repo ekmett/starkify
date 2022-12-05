@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedLists #-}
 module Validation where
 
 import Control.Monad.Validate
@@ -34,7 +35,7 @@ nextId = state $ \i -> (i, i+1)
 bad :: e -> Validation (DList.DList (Error e)) a
 bad e = do
   ctxs <- ask
-  refute (DList.singleton $ Error ctxs e)
+  refute [Error ctxs e]
 
 data Ctx =
     InFunction (Maybe LT.Text) Natural -- func name, func id
@@ -137,7 +138,7 @@ ppErrData NoMain = "missing main function"
 ppErrData (StdValidation e) = "standard validator issue: " ++ show e
 ppErrData (WasmFunctionCallIdx i) = "invalid index in function call: " ++ show i
 ppErrData (UnsupportedInstruction _i) = "unsupported WASM instruction"
-ppErrData (Unsupported64Bits opstr) = "unsupported 64 bits operation (" ++ opstr ++ ")"
+ppErrData (Unsupported64Bits opstr) = "unsupported 64 bit operation (" ++ opstr ++ ")"
 ppErrData (UnsupportedMemAlign a _instr) = "unsupported alignment: " ++ show a
 ppErrData NoMultipleMem = "multiple memories not supported"
 ppErrData (UnsupportedImport imodule iname idesc) =
@@ -164,7 +165,7 @@ ppErr e =
 ppErrCtx :: Ctx -> String
 ppErrCtx (InFunction mname i) = "of function " ++ show i ++ maybe "" (\name -> " (" ++ LT.unpack name ++ ")") mname
 ppErrCtx DatasInit = "in data section"
-ppErrCtx GlobalsInit = "in globals initilisation"
+ppErrCtx GlobalsInit = "in globals initialisation"
 ppErrCtx ImportsCheck = "in imports"
 ppErrCtx Typechecker = "in typechecking"
 ppErrCtx (InInstruction k i) = "in instruction #" ++ show k ++ ": " ++ take 100 (show i) ++ "  ..."
