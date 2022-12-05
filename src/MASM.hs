@@ -9,6 +9,7 @@ module MASM where
 import Control.Monad.Writer.Strict
 
 import qualified Data.DList as DList
+import qualified Data.Text.Lazy as T
 import Data.Foldable
 import Data.Text.Lazy (Text, unpack)
 import Data.Typeable
@@ -29,7 +30,8 @@ data Module = Module
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 data Proc = Proc
-  { procName    :: ProcName
+  { procID      :: Int
+  , procName    :: Maybe ProcName
   , procNLocals :: Int
   , procInstrs  :: [Instruction]
   }
@@ -53,6 +55,7 @@ data Instruction
   | Swap Word32 -- swap[.i]
   | Drop -- drop
   | Dup Word32 -- dup.n
+  | MoveUp Word32 -- moveup.n
   | TruncateStack -- exec.sys::truncate_stack
 
   | LocStore Word32  -- loc_store.i
@@ -74,6 +77,8 @@ data Instruction
 
   -- "faked 64 bits" operations, u64::checked_{add,sub,mul}
   | IAdd64 | ISub64 | IMul64
+  | IShL64 | IShR64
+  | IOr64 | IAnd64 | IXor64
   | IEq64 | IEqz64 | INeq64
   | ILt64 | IGt64 | ILte64 | IGte64
   deriving (Eq, Ord, Show, Generic, Typeable)
@@ -102,7 +107,8 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
           traverse_ ppProc (moduleProcs m)
           ppProgram (moduleProg m)
         ppProc p = do
-          [ "proc." ++ unpack (procName p) ++ "." ++ show (procNLocals p) ]
+          let procname = maybe ("func" ++ show (procID p)) T.unpack (procName p)
+          [ "proc." ++ procname ++ "." ++ show (procNLocals p) ]
           indent $ traverse_ ppInstr (procInstrs p)
           "end"
         ppProgram p = do
@@ -114,8 +120,9 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr (IfTrue thenBranch elseBranch) = do
           "if.true"
           indent $ traverse_ ppInstr thenBranch
-          "else"
-          indent $ traverse_ ppInstr elseBranch
+          when (not $ null elseBranch) $ do
+            "else"
+            indent $ traverse_ ppInstr elseBranch
           "end"
 
         ppInstr (LocStore n) = [ "loc_store." ++ show n ]
@@ -125,9 +132,10 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr (Swap n) = [ "swap" ++ if n == 1 then "" else "." ++ show n ]
         ppInstr Drop = [ "drop" ]
         ppInstr (Dup n) = [ "dup." ++ show n ]
+        ppInstr (MoveUp n) = [ "movup." ++ show n ]
         ppInstr TruncateStack = [ "exec.sys::truncate_stack" ]
 
-        ppInstr IAdd = [ "u32checked_add" ]
+        ppInstr IAdd = [ "u32wrapping_add" ]
         ppInstr ISub = [ "u32checked_sub" ]
         ppInstr IMul = [ "u32checked_mul" ]
         ppInstr IDiv = [ "u32checked_div" ]
@@ -157,12 +165,8 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr IGt64 = [ "exec.u64::checked_gt" ]
         ppInstr ILte64 = [ "exec.u64::checkted_lte" ]
         ppInstr IGte64 = [ "exec.u64::checked_gte" ]
-
-mod1 :: Module
-mod1 = Module
-  { moduleImports = [ "std::sys" ]
-  , moduleProcs = [proc1, proc2]
-  , moduleProg = Program [ Exec "hello" ]
-  }
-  where proc1 = Proc "hello" 3 []
-        proc2 = Proc "world" 2 []
+        ppInstr IShL64 = [ "exec.u64::overflowing_shl" ]
+        ppInstr IShR64 = [ "exec.u64::overflowing_shr" ]
+        ppInstr IOr64 = [ "exec.u64::checked_or" ]
+        ppInstr IAnd64 = [ "exec.u64::checked_and" ]
+        ppInstr IXor64 = [ "exec.u64::checked_xor" ]
