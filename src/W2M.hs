@@ -53,9 +53,8 @@ toMASM checkImports m = do
     <$> fmap catMaybes (traverse fun2MASM sortedFuns)
     <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec "main" ] ++ stackCleanUp))
 
-  where checkImps xs
-          | checkImports = traverse_ (\(W.Import imodule iname idesc) -> badImport imodule iname $ descType idesc) xs
-          | otherwise    = return ()
+  where checkImps
+          = traverse_ (\(W.Import imodule iname idesc) -> badImport imodule iname $ descType idesc)
 
         descType idesc = case idesc of
           W.ImportFunc _t -> "function"
