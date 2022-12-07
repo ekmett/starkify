@@ -8,6 +8,7 @@ module MASM where
 
 import Control.Monad.Writer.Strict
 
+import Data.Char (toLower)
 import qualified Data.DList as DList
 import qualified Data.Text.Lazy as T
 import Data.Foldable
@@ -46,10 +47,10 @@ newtype Program = Program { programInstrs :: [Instruction] }
 -- TODO(Matthias): perhaps annotate stack effect?
 data Instruction
   = Exec ProcName -- exec.foo
-  -- https://maticnetwork.github.io/miden/user_docs/assembly/flow_control.html#conditional-execution
-  -- Not sure if there's also an if.false?
-  -- if.true
-  | IfTrue { thenBranch:: [Instruction], elseBranch:: [Instruction] }
+  | If { -- if.[condition]
+    condition :: Bool,
+    thenBranch :: [Instruction],
+    elseBranch :: [Instruction] }
 
   | Push Word32   -- push.n
   | Swap Word32 -- swap[.i]
@@ -117,10 +118,10 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
           "end"
         ppInstr :: Instruction -> PpMASM ()
         ppInstr (Exec pname) = [ "exec." ++ unpack pname ]
-        ppInstr (IfTrue thenBranch elseBranch) = do
-          "if.true"
+        ppInstr (If {condition, thenBranch, elseBranch}) = do
+          ["if." ++ fmap toLower (show condition)]
           indent $ traverse_ ppInstr thenBranch
-          when (not $ null elseBranch) $ do
+          unless (null elseBranch) $ do
             "else"
             indent $ traverse_ ppInstr elseBranch
           "end"
