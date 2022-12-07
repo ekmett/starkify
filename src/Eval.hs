@@ -1,13 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Eval where
 
-import qualified Language.Wasm.Interpreter as WASM
-import qualified Language.Wasm.Structure as WASM
-import qualified Language.Wasm.Validate as WASM
+import Language.Wasm.Interpreter qualified as WASM
+import Language.Wasm.Structure qualified as WASM
+import Language.Wasm.Validate qualified as WASM
 
-import qualified MASM
-import qualified MASM.Interpreter as MASM
-import qualified MASM.Miden as Miden
+import MASM qualified
+import MASM.Interpreter qualified as MASM
+import MASM.Miden qualified as Miden
 import Data.Word
 
 simulateWASM :: WASM.Module -> IO (Maybe [WASM.Value])

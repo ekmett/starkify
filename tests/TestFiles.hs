@@ -18,9 +18,9 @@ import System.IO.Temp
 import Test.Hspec
 import Text.Read
 
-import qualified Data.ByteString.Lazy as LBS
-import qualified Language.Wasm as Wasm
-import qualified Language.Wasm.Interpreter as Wasm
+import Data.ByteString.Lazy qualified as LBS
+import Language.Wasm qualified as Wasm
+import Language.Wasm.Interpreter qualified as Wasm
 
 withCompiledC
  :: FilePath -- path to .c file
