@@ -644,6 +644,23 @@ translateIBinOp W.BS32 op = case op of
   W.IAnd  -> stackBinop SI32 M.IAnd
   W.IOr   -> stackBinop SI32 M.IOr
   W.IXor  -> stackBinop SI32 M.IXor
+  W.IDivU -> stackBinop SI32 M.IDiv
+  W.IDivS -> assumingPrefix [SI32, SI32] $ \t ->
+                                   -- [b, a, ...]
+    ( [ M.Dup 1 ] ++ computeAbs ++ -- [abs(a), b, a, ...]
+      [ M.Dup 1 ] ++ computeAbs ++ -- [abs(b), abs(a), b, a, ...]
+      [ M.IDiv                     -- [abs(a)/abs(b), b, a, ...]
+      , M.Swap 2                   -- [a, b, abs(a)/abs(b), ...]
+      ] ++ computeIsNegative ++    -- [a_negative, b, abs(a)/abs(b), ...]
+      [ M.Swap 1                   -- [b, a_negative, abs(a)/abs(b), ...]
+      ] ++ computeIsNegative ++    -- [b_negative, a_negative, abs(a)/abs(b), ...]
+      [ M.IXor                     -- [a_b_diff_sign, abs(a)/abs(b), ...]
+      , M.If True                  -- [abs(a)/abs(b), ...]
+          computeNegate            -- [-abs(a)/abs(b), ...]
+          []                       -- [abs(a)/abs(b), ...]
+      ]
+    , SI32 : t
+    )
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [Ctx] [M.Instruction])
@@ -686,6 +703,33 @@ stackBinop' ty xs = assumingPrefix [ty, ty] $ \t -> ([xs], ty:t)
 
 stackRelop :: StackElem -> M.Instruction -> V (StackFun [Ctx] [M.Instruction])
 stackRelop ty xs = assumingPrefix [ty, ty] $ \t -> ([xs], SI32:t)
+
+-- TODO: turn those into procedures?
+
+computeAbs :: [M.Instruction]
+computeAbs =           -- [x, ...]
+  [ M.Dup 0 ] ++       -- [x, x, ...]
+  computeIsNegative ++ -- [x_highest_bit, x, ...]
+  [ M.If True          -- [x, ...]
+      computeNegate    -- [-x, ...]
+      []               -- [x, ...]
+  ]
+
+computeNegate :: [M.Instruction]
+computeNegate =       -- [x, ...]
+  [ M.Push 4294967295 -- [4294967295, x, ...]
+  , M.Swap 1, M.ISub  -- [4294967295 - x, ...]
+  , M.Push 1, M.IAdd  -- [4294967295 - x + 1, ...]
+  ]
+
+computeIsNegative :: [M.Instruction]
+computeIsNegative = -- [x, ...]
+  [ M.Push hi       -- [2^31, x, ...]
+  , M.IAnd          -- [2^31 & x, ...]
+  , M.Push 31       -- [31, 2^31 & x, ...]
+  , M.IShR          -- [x_highest_bit, ...]
+  ]
+  where hi = 2^(31::Int)
 
 assumingPrefix :: StackType -> (StackType -> (a, StackType)) -> V (StackFun [Ctx] a)
 assumingPrefix xs f = do
