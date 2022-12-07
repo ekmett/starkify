@@ -58,6 +58,7 @@ data Instruction
   | Dup Word32 -- dup.n
   | MoveUp Word32 -- moveup.n
   | TruncateStack -- exec.sys::truncate_stack
+  | SDepth -- push.env.sdepth
 
   | LocStore Word32  -- loc_store.i
   | LocLoad Word32 -- loc_load.i
@@ -135,6 +136,7 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr (Dup n) = [ "dup." ++ show n ]
         ppInstr (MoveUp n) = [ "movup." ++ show n ]
         ppInstr TruncateStack = "exec.sys::truncate_stack"
+        ppInstr SDepth = "push.env.sdepth"
 
         ppInstr IAdd = "u32wrapping_add"
         ppInstr ISub = "u32checked_sub"
