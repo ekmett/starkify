@@ -29,9 +29,9 @@ import MASM.Interpreter (toFakeW64, FakeW64 (..))
 import Tools (dfs)
 import Validation
 import W2M.Stack (StackElem(..), StackType, StackProblem(..), StackFun)
-import qualified W2M.Stack as WStack
+import W2M.Stack qualified as WStack
 
-import qualified Data.Text.Lazy  as T
+import Data.Text.Lazy qualified  as T
 import Control.Monad.Reader
 
 type WasmAddr = Natural

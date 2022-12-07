@@ -4,7 +4,7 @@ module Validation where
 import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
-import qualified Data.DList as DList
+import Data.DList qualified as DList
 import Data.List (sortOn)
 import Data.Typeable
 import GHC.Natural
@@ -13,9 +13,9 @@ import Language.Wasm.Structure
 
 import W2M.Stack (StackProblem(..))
 
-import qualified Language.Wasm.Structure as WASM
-import qualified Language.Wasm.Validate  as WASM
-import qualified Data.Text.Lazy as LT
+import Language.Wasm.Structure qualified as WASM
+import Language.Wasm.Validate qualified  as WASM
+import Data.Text.Lazy qualified as LT
 
 type Id = Int
 

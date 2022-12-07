@@ -9,14 +9,14 @@ module MASM where
 import Control.Monad.Writer.Strict
 
 import Data.Char (toLower)
-import qualified Data.DList as DList
-import qualified Data.Text.Lazy as T
+import Data.DList qualified as DList
+import Data.Text.Lazy qualified as T
 import Data.Foldable
 import Data.Text.Lazy (Text, unpack)
 import Data.Typeable
 import Data.Word
 import Data.String
-import qualified GHC.Exts
+import GHC.Exts qualified
 import GHC.Generics
 
 type ProcName = Text

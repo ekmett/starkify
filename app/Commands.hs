@@ -21,7 +21,7 @@ import System.Process
 import Text.Pretty.Simple (pShow)
 import Validation
 import W2M
-import qualified Data.IntMap.Strict as IntMap
+import Data.IntMap.Strict qualified as IntMap
 import MASM.Interpreter (interpret, runInterp, Mem (..))
 import System.Directory
 

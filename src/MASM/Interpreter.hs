@@ -5,7 +5,7 @@ import Data.Word ( Word32, Word64 )
 import MASM
 -- import Data.List (find)
 import Data.Maybe (fromMaybe)
-import qualified Data.IntMap.Strict as IntMap
+import Data.IntMap.Strict qualified as IntMap
 
 type Value = Word32
 type Stack = [Value]
