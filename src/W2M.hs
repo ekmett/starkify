@@ -249,7 +249,7 @@ toMASM checkImports m = do
         translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
         translateInstr _ W.Select =
           assumingPrefix [SI32, SI32, SI32] $ \t ->
-            ([M.IfTrue [M.Drop] [M.Swap 1, M.Drop]], SI32:t)
+            ([M.If True [M.Drop] [M.Swap 1, M.Drop]], SI32:t)
         translateInstr _ (W.I32Load (W.MemArg offset _align)) =
             assumingPrefix [SI32] $ \t ->
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
@@ -312,7 +312,7 @@ toMASM checkImports m = do
           sigInstrs <- assumingPrefix [SI32] $ \t -> -- [v, ...]
                  ( [ M.Dup 0                         -- [v, v, ...]
                    , M.Push 128, M.IGte              -- [v >= 128, v, ...]
-                   , M.IfTrue                        -- [v, ...]
+                   , M.If True                       -- [v, ...]
                        [ M.Push 255, M.Swap 1        -- [v, 255, ...]
                        , M.ISub, M.Push 1, M.IAdd    -- [255 - v + 1, ...]
                        , M.Push 4294967295           -- [4294967295, 255 - v + 1, ...]
@@ -595,7 +595,8 @@ toMASM checkImports m = do
             , M.Push 2147483648        -- [2^31, x, x, ...]
             , M.IAnd                   -- [x & 2^31, x, ...]
             , M.Push 31, M.IShR        -- [x_highest_bit, x, ...]
-            , M.IfTrue
+            -- TODO: Use select
+            , M.If True
                 [ M.Push 4294967295    -- [0b11..1, x, ...]
                 ]
                 [ M.Push 0             -- [0, x, ...]

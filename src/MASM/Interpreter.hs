@@ -95,11 +95,11 @@ step (MemStore Nothing) (addr:v:xs, mem) = pure
 step (MemStore (Just addr)) (v:xs, mem) = pure
     (v:xs, mem { linearmem = IntMap.insert (fromIntegral addr) v (linearmem mem) })
 {-
-step (IfTrue thenB elseB : is) (a:xs) mem =
+step (If True thenB elseB : is) (a:xs) mem =
     case a of
         1 -> go (thenB ++ is) xs mem
         0 -> go (elseB ++ is) xs mem
-        _ -> impossible (IfTrue thenB elseB) (a:xs) mem
+        _ -> impossible (If True thenB elseB) (a:xs) mem
 -}
 step TruncateStack (st, mem) = pure (take 16 st, mem) -- probably not quite what Miden does...
 step i (st, mem) = impossible i st mem
