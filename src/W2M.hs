@@ -588,6 +588,21 @@ toMASM checkImports m = do
         -- similarly, wrap drops the high 32 bits, which amounts to dropping the tip of the stack
         -- in miden, going from [v_hi, v_lo, ...] to [v_lo, ...]
         translateInstr _ W.I32WrapI64 = assumingPrefix [SI64] $ \t -> ([M.Drop], SI32:t)
+        -- this is a sign-aware extension, so we push 0 or maxBound :: Word32
+        -- depending on whether the most significant bit of the i32 is 0 or 1.
+        translateInstr _ W.I64ExtendSI32 = assumingPrefix [SI32] $ \t ->
+          ( [ M.Dup 0                  -- [x, x, ...]
+            , M.Push 2147483648        -- [2^31, x, x, ...]
+            , M.IAnd                   -- [x & 2^31, x, ...]
+            , M.Push 31, M.IShR        -- [x_highest_bit, x, ...]
+            , M.IfTrue
+                [ M.Push 4294967295    -- [0b11..1, x, ...]
+                ]
+                [ M.Push 0             -- [0, x, ...]
+                ]
+            ]
+          , SI64:t
+          )
 
         translateInstr _ W.I64Eqz = assumingPrefix [SI64] $ \t -> ([M.IEqz64], SI32:t)
 

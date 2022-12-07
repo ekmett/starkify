@@ -155,7 +155,7 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
 
         ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
         ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
-        ppInstr IAdd64 = "exec.u64::checked_add"
+        ppInstr IAdd64 = "exec.u64::wrapping_add"
         ppInstr ISub64 = "exec.u64::checked_sub"
         ppInstr IMul64 = "exec.u64::checked_mul"
         ppInstr IEq64 = "exec.u64::checked_eq"
