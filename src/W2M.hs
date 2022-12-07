@@ -737,6 +737,12 @@ computeAbs =           -- [x, ...]
       []               -- [x, ...]
   ]
 
+-- negate a number using two's complement encoding:
+-- 4294967295 = 2^32-1 is the largest Word32
+-- 4294967295 + 1 wraps around to turn into 0
+-- so 4294967295 - x + 1 "is indeed" -x, but computing
+-- the subtraction first and then adding one is a very concise way
+-- to negate a number using two's complement.
 computeNegate :: [M.Instruction]
 computeNegate =       -- [x, ...]
   [ M.Push 4294967295 -- [4294967295, x, ...]
@@ -747,9 +753,7 @@ computeNegate =       -- [x, ...]
 computeIsNegative :: [M.Instruction]
 computeIsNegative = -- [x, ...]
   [ M.Push hi       -- [2^31, x, ...]
-  , M.IAnd          -- [2^31 & x, ...]
-  , M.Push 31       -- [31, 2^31 & x, ...]
-  , M.IShR          -- [x_highest_bit, ...]
+  , M.IGt           -- [x > 2^31, ...] (meaning it's a two's complement encoded negative integer)
   ]
   where hi = 2^(31::Int)
 
