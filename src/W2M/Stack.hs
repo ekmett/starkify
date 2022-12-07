@@ -13,7 +13,7 @@ type StackType = [StackElem]
 data StackElem = SI32 | SI64
   deriving (Eq, Show)
 
--- withStack :: ctx -> StackType -> 
+-- withStack :: ctx -> StackType ->
 
 assumingPrefix
  :: ctx -> StackType -> (StackType -> (a, StackType)) -> StackFun ctx a

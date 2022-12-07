@@ -279,7 +279,7 @@ toMASM checkImports m = do
                    ]
                  ,)
         translateInstr _ (W.I32Load8U (W.MemArg offset _align)) =
-            assumingPrefix [SI32] $ \t -> 
+            assumingPrefix [SI32] $ \t ->
                  ( [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd                       -- [byte_addr+offset, ...]
                    , M.IDivMod (Just 4)           -- [r, q, ...]
@@ -458,7 +458,7 @@ toMASM checkImports m = do
             )
         translateInstr _ (W.SetGlobal k) = case getGlobalTy k of
           SI32 -> assumingPrefix [SI32]
-            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k 
+            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k
               , M.Drop
               ]
             ,)
@@ -636,7 +636,7 @@ translateIBinOp W.BS64 op = case op of
   _       -> unsupported64Bits op
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop SI32 M.IAdd
-  W.ISub  -> stackBinop SI32 M.ISub 
+  W.ISub  -> stackBinop SI32 M.ISub
   W.IMul  -> stackBinop SI32 M.IMul
   W.IShl  -> stackBinop SI32 M.IShL
   W.IShrU -> stackBinop SI32 M.IShR
