@@ -679,6 +679,28 @@ translateIRelOp W.BS32 op = case op of
   W.IGtU -> stackRelop SI32 M.IGt
   W.ILeU -> stackRelop SI32 M.ILte
   W.IGeU -> stackRelop SI32 M.IGte
+  W.ILtS -> assumingPrefix [SI32, SI32] $ \t -> -- [b, a, ...]
+    ( [ M.ISub                                  -- [a-b, ...]
+      ] ++ computeIsNegative                    -- [a-b < 0, ...] =
+                                                -- [a<b, ...]
+    , SI32 : t
+    )
+  W.IGtS -> assumingPrefix [SI32, SI32] $ \t -> -- [b, a, ...]
+    ( [ M.Swap 1                                -- [b-a, ...]
+      , M.ISub                                  -- [b-a, ...]
+      ] ++ computeIsNegative                    -- [b-a < 0, ...] =
+                                                -- [b<a, ...]
+    , SI32 : t
+    )
+  W.IGeS -> assumingPrefix [SI32, SI32] $ \t ->       -- [b, a, ...]
+    ( [ M.Dup 0, M.Dup 2                              -- [b, a, b, a, ...]
+      , M.IEq Nothing                                 -- [a == b, b, a, ...]
+      , M.If True                                     -- [b, a, ...]
+          [ M.Drop, M.Drop, M.Push 1 ]                -- [1, ...]
+          ([ M.Swap 1, M.ISub ] ++ computeIsNegative) -- [a > b, ...]
+      ]
+    , SI32 : t
+    )
   _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
 
 -- necessary because of https://github.com/maticnetwork/miden/issues/371
