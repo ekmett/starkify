@@ -51,6 +51,10 @@ data Instruction
     condition :: Bool,
     thenBranch :: [Instruction],
     elseBranch :: [Instruction] }
+  | While {
+    condition :: Bool,
+    body :: [Instruction]
+  }
 
   | Push Word32   -- push.n
   | Swap Word32 -- swap[.i]
@@ -125,6 +129,10 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
           unless (null elseBranch) $ do
             "else"
             indent $ traverse_ ppInstr elseBranch
+          "end"
+        ppInstr (While {condition, body}) = do
+          ["while." ++ fmap toLower (show condition)]
+          indent $ traverse_ ppInstr body
           "end"
 
         ppInstr (LocStore n) = [ "loc_store." ++ show n ]
