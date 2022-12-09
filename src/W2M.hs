@@ -613,6 +613,8 @@ toMASM checkImports m = do
           \case
             SI32 -> return [M.Drop]
             SI64 -> return [M.Drop, M.Drop]
+        translateInstr _ W.Unreachable = noPrefix $ \t ->
+          ([M.Push 0, M.Assert], t)
 
         translateInstr a i@(W.Block _ is) =
           inContext InBlock (translateInstrs [] a is) *>
@@ -644,6 +646,24 @@ translateIBinOp W.BS32 op = case op of
   W.IAnd  -> stackBinop SI32 M.IAnd
   W.IOr   -> stackBinop SI32 M.IOr
   W.IXor  -> stackBinop SI32 M.IXor
+  W.IDivU -> stackBinop SI32 M.IDiv
+  W.IDivS -> assumingPrefix [SI32, SI32] $ \t ->
+                                   -- [b, a, ...]
+    ( [ M.Dup 1 ] ++ computeAbs ++ -- [abs(a), b, a, ...]
+      [ M.Dup 1 ] ++ computeAbs ++ -- [abs(b), abs(a), b, a, ...]
+      [ M.IDiv                     -- [abs(a)/abs(b), b, a, ...]
+      , M.Swap 2                   -- [a, b, abs(a)/abs(b), ...]
+      ] ++ computeIsNegative ++    -- [a_negative, b, abs(a)/abs(b), ...]
+      [ M.Swap 1                   -- [b, a_negative, abs(a)/abs(b), ...]
+      ] ++ computeIsNegative ++    -- [b_negative, a_negative, abs(a)/abs(b), ...]
+      [ M.IXor                     -- [a_b_diff_sign, abs(a)/abs(b), ...]
+      , M.If True                  -- [abs(a)/abs(b), ...]
+          computeNegate            -- [-abs(a)/abs(b), ...]
+          []                       -- [abs(a)/abs(b), ...]
+      ]
+    , SI32 : t
+    )
+  W.IShrS -> fmap ([ M.Push 1, M.Swap 1, M.IShL] ++) <$> translateIBinOp W.BS32 W.IDivS
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [Ctx] [M.Instruction])
@@ -662,6 +682,28 @@ translateIRelOp W.BS32 op = case op of
   W.IGtU -> stackRelop SI32 M.IGt
   W.ILeU -> stackRelop SI32 M.ILte
   W.IGeU -> stackRelop SI32 M.IGte
+  W.ILtS -> assumingPrefix [SI32, SI32] $ \t -> -- [b, a, ...]
+    ( [ M.ISub                                  -- [a-b, ...]
+      ] ++ computeIsNegative                    -- [a-b < 0, ...] =
+                                                -- [a<b, ...]
+    , SI32 : t
+    )
+  W.IGtS -> assumingPrefix [SI32, SI32] $ \t -> -- [b, a, ...]
+    ( [ M.Swap 1                                -- [b-a, ...]
+      , M.ISub                                  -- [b-a, ...]
+      ] ++ computeIsNegative                    -- [b-a < 0, ...] =
+                                                -- [b<a, ...]
+    , SI32 : t
+    )
+  W.IGeS -> assumingPrefix [SI32, SI32] $ \t ->       -- [b, a, ...]
+    ( [ M.Dup 0, M.Dup 2                              -- [b, a, b, a, ...]
+      , M.IEq Nothing                                 -- [a == b, b, a, ...]
+      , M.If True                                     -- [b, a, ...]
+          [ M.Drop, M.Drop, M.Push 1 ]                -- [1, ...]
+          ([ M.Swap 1, M.ISub ] ++ computeIsNegative) -- [a > b, ...]
+      ]
+    , SI32 : t
+    )
   _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
 
 -- necessary because of https://github.com/maticnetwork/miden/issues/371
@@ -686,6 +728,37 @@ stackBinop' ty xs = assumingPrefix [ty, ty] $ \t -> ([xs], ty:t)
 
 stackRelop :: StackElem -> M.Instruction -> V (StackFun [Ctx] [M.Instruction])
 stackRelop ty xs = assumingPrefix [ty, ty] $ \t -> ([xs], SI32:t)
+
+-- TODO: turn those into procedures?
+
+computeAbs :: [M.Instruction]
+computeAbs =           -- [x, ...]
+  [ M.Dup 0 ] ++       -- [x, x, ...]
+  computeIsNegative ++ -- [x_highest_bit, x, ...]
+  [ M.If True          -- [x, ...]
+      computeNegate    -- [-x, ...]
+      []               -- [x, ...]
+  ]
+
+-- negate a number using two's complement encoding:
+-- 4294967295 = 2^32-1 is the largest Word32
+-- 4294967295 + 1 wraps around to turn into 0
+-- so 4294967295 - x + 1 "is indeed" -x, but computing
+-- the subtraction first and then adding one is a very concise way
+-- to negate a number using two's complement.
+computeNegate :: [M.Instruction]
+computeNegate =       -- [x, ...]
+  [ M.Push 4294967295 -- [4294967295, x, ...]
+  , M.Swap 1, M.ISub  -- [4294967295 - x, ...]
+  , M.Push 1, M.IAdd  -- [4294967295 - x + 1, ...]
+  ]
+
+computeIsNegative :: [M.Instruction]
+computeIsNegative = -- [x, ...]
+  [ M.Push hi       -- [2^31, x, ...]
+  , M.IGt           -- [x > 2^31, ...] (meaning it's a two's complement encoded negative integer)
+  ]
+  where hi = 2^(31::Int)
 
 assumingPrefix :: StackType -> (StackType -> (a, StackType)) -> V (StackFun [Ctx] a)
 assumingPrefix xs f = do

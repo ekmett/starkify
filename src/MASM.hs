@@ -87,6 +87,8 @@ data Instruction
   | IOr64 | IAnd64 | IXor64
   | IEq64 | IEqz64 | INeq64
   | ILt64 | IGt64 | ILte64 | IGte64
+
+  | Assert
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 newtype PpMASM a = PpMASM {runPpMASM :: Writer (DList.DList String) a}
@@ -181,3 +183,5 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr IOr64 = "exec.u64::checked_or"
         ppInstr IAnd64 = "exec.u64::checked_and"
         ppInstr IXor64 = "exec.u64::checked_xor"
+
+        ppInstr Assert = "assert"
