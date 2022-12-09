@@ -613,6 +613,8 @@ toMASM checkImports m = do
           \case
             SI32 -> return [M.Drop]
             SI64 -> return [M.Drop, M.Drop]
+        translateInstr _ W.Unreachable = noPrefix $ \t ->
+          ([M.Push 0, M.Assert], t)
 
         translateInstr a i@(W.Block _ is) =
           inContext InBlock (translateInstrs [] a is) *>
