@@ -661,6 +661,7 @@ translateIBinOp W.BS32 op = case op of
       ]
     , SI32 : t
     )
+  W.IShrS -> fmap ([ M.Push 1, M.Swap 1, M.IShL] ++) <$> translateIBinOp W.BS32 W.IDivS
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [Ctx] [M.Instruction])
