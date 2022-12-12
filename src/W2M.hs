@@ -12,9 +12,10 @@ import Data.Bits
 import Data.ByteString.Lazy qualified as BS
 import Data.Foldable
 import Data.Functor ((<&>))
+import Data.List (nub)
 import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, maybeToList, mapMaybe)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
@@ -52,9 +53,11 @@ toMASM checkImports m = do
   when checkImports $ inContext ImportsCheck $ checkImps (W.imports m)
   globalsInit <- inContext GlobalsInit getGlobalsInit
   datasInit <- inContext DatasInit getDatasInit
+  when (null mainFunctions) $ error "No start function or 'main' function found in WASM module, cannot proceed."
 
   M.Module ["std::sys", "std::math::u64"]
     <$> fmap catMaybes (traverse fun2MASM sortedFuns)
+    -- TODO: Do we need to perform stack cleanup even if proc_exit is invoked?
     <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec mainFunName ] ++ stackCleanUp))
 
   where checkImps
@@ -82,13 +85,24 @@ toMASM checkImports m = do
           , W.Call callee <- body
           ]
         -- enumerate x = x : concatMap enumerate [ y | y <- maybe [] Set.toList (Map.lookup x callGraph) ]
-        (mainFunId, mainFunName)
-          | Just (W.StartFunction k) <- W.start m = (k, "func" <> T.pack (show k))
-          | Just mainId <- Map.lookup "main" functionIdsMap = (mainId, "main")
-          | otherwise = error "No start function in WASM module and no 'main', cannot proceed."
+
+        -- Each compiler has a different convention for exporting the main function, and the
+        -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
+        -- currently pass input to the main function, we can proceed if either is present (and we
+        -- should use both if both are present).
+        mainFunctions = nub (maybeToList startFunId <> maybeToList mainFunId)
+
+        mainFunId
+          | Just mainId <- Map.lookup "main" functionIdsMap = Just mainId
+          | Just mainId <- Map.lookup "_start" functionIdsMap = Just mainId
+          | otherwise = Nothing
+
+        startFunId
+          | Just (W.StartFunction k) <- W.start m = Just k
+          | otherwise = Nothing
 
         sortedFuns :: [(FunId, Maybe FunName, W.Function)]
-        sortedFuns = reverse $ catMaybes $ dfs mainFunId callGraph <&> \name ->
+        sortedFuns = reverse $ catMaybes $ concatMap (`dfs` callGraph) mainFunctions <&> \name ->
           case Map.lookup name allFunctionsMap of
                     Just (mname, Left f) -> Just (name, mname, f)
                     -- TODO(Matthias): Do we need to handle problems more carefully here?
