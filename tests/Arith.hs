@@ -13,7 +13,7 @@ import Test.QuickCheck
       ioProperty,
       Arbitrary(arbitrary),
       chooseInt,
-      frequency, NonZero (..) )
+      frequency, NonZero (..), Negative (..) )
 
 import qualified Language.Wasm.Structure as W
 import qualified Eval as Miden

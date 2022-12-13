@@ -663,29 +663,28 @@ translateIBinOp W.BS32 op = case op of
       ]
     , SI32 : t
     )
-  W.IShrS -> do -- [b, a, ...]
-    let prelude = [ M.Dup 1  -- [a, b, a, ...]
-                  , M.Swap 1 -- [b, a, a, ...]
-                  , M.Push 1 -- [1, b, a, a, ...]
-                  , M.Swap 1 -- [b, 1, a, a, ...]
-                  , M.IShL   -- [2^b, a, a, ...]
-                  , M.Swap 1 -- [a, 2^b, a, ...]
-                  , M.Dup 1  -- [2^b, a, 2^b, a, ...]
-                  ]
-        roundDownIfNeeded =    -- [q, 2^b, a, ...]
-          [ M.Dup 0            -- [q, q, 2^b, a, ...]
-          , M.Swap 2           -- [2^b, q, q, a, ...]
-          , M.IMul             -- [q*2^b, q, a, ...]
-          , M.MoveUp 2         -- [a, q*2^b, q, ...]
-          , M.Swap 1           -- [q*2^b, a, q, ...]
-          , M.ISub             -- [a - q*2^b, q, ...] = [r, q, ...]
-
-          , M.IEq (Just 0)  -- [r==0, q, ...]
-          , M.If True       -- [q, ...]
-              [ M.Dup 0, M.Drop ] -- [q, ...]
-              [ M.Push 1, M.ISub ] -- [q-1, ...]
-          ]
-    fmap (\xs -> prelude ++ xs ++ roundDownIfNeeded) <$> translateIBinOp W.BS32 W.IDivS
+  W.IShrS -> assumingPrefix [SI32, SI32] $ \t -> -- [b, a, ...]
+    ( [ M.Dup 1                  -- [a, b, a, ...]
+      ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
+      [ M.If True                -- [b, a, ...]
+          ([ M.Dup 1             -- [a, b, a, ...]
+           , M.Push 2, M.IMod    -- [a mod 2, b, a, ...]
+           , M.MoveUp 2          -- [a, a mod 2, b, ...]
+           ] ++ computeNegate ++ -- [-a, a mod 2, b, ...]
+           [ M.MoveUp 2          -- [b, -a, a mod 2, ...]
+           , M.IShR              -- [(-a) >> b, a mod 2, ...]
+           ] ++ computeNegate ++ -- [ -((-a) >> b), a mod 2, ...]
+           [ M.Swap 1            -- [a mod 2, -((-a) >> b), ...]
+           , M.If True           -- [-((-a) >> b), ...]
+               [ M.Push 1, M.ISub -- [-((-a) >> b) - 1, ...]
+               ]
+               [ M.Dup 0, M.Drop ] -- [-((-a) >> b), ...]
+           ]
+          )
+          [ M.IShR ]            -- [ a >> b, ...]
+      ]
+    , SI32 : t
+    )
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [Ctx] [M.Instruction])
