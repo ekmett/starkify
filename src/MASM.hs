@@ -149,8 +149,8 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr SDepth = "push.env.sdepth"
 
         ppInstr IAdd = "u32wrapping_add"
-        ppInstr ISub = "u32checked_sub"
-        ppInstr IMul = "u32checked_mul"
+        ppInstr ISub = "u32wrapping_sub"
+        ppInstr IMul = "u32wrapping_mul"
         ppInstr IDiv = "u32checked_div"
         ppInstr (IDivMod mk) = [ "u32checked_divmod" ++ maybe "" (\k -> "." ++ show k) mk ]
         ppInstr IShL = "u32checked_shl"

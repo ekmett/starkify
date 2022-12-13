@@ -55,7 +55,7 @@ toMASM checkImports m = do
 
   M.Module ["std::sys", "std::math::u64"]
     <$> fmap catMaybes (traverse fun2MASM sortedFuns)
-    <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec "main" ] ++ stackCleanUp))
+    <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec mainFunName ] ++ stackCleanUp))
 
   where checkImps
           = traverse_ (\(W.Import imodule iname idesc) -> badImport imodule iname $ descType idesc)
@@ -82,9 +82,9 @@ toMASM checkImports m = do
           , W.Call callee <- body
           ]
         -- enumerate x = x : concatMap enumerate [ y | y <- maybe [] Set.toList (Map.lookup x callGraph) ]
-        mainFunId
-          | Just (W.StartFunction k) <- W.start m = k
-          | Just mainId <- Map.lookup "main" functionIdsMap = mainId
+        (mainFunId, mainFunName)
+          | Just (W.StartFunction k) <- W.start m = (k, "func" <> T.pack (show k))
+          | Just mainId <- Map.lookup "main" functionIdsMap = (mainId, "main")
           | otherwise = error "No start function in WASM module and no 'main', cannot proceed."
 
         sortedFuns :: [(FunId, Maybe FunName, W.Function)]
@@ -663,7 +663,29 @@ translateIBinOp W.BS32 op = case op of
       ]
     , SI32 : t
     )
-  W.IShrS -> fmap ([ M.Push 1, M.Swap 1, M.IShL] ++) <$> translateIBinOp W.BS32 W.IDivS
+  W.IShrS -> do -- [b, a, ...]
+    let prelude = [ M.Dup 1  -- [a, b, a, ...]
+                  , M.Swap 1 -- [b, a, a, ...]
+                  , M.Push 1 -- [1, b, a, a, ...]
+                  , M.Swap 1 -- [b, 1, a, a, ...]
+                  , M.IShL   -- [2^b, a, a, ...]
+                  , M.Swap 1 -- [a, 2^b, a, ...]
+                  , M.Dup 1  -- [2^b, a, 2^b, a, ...]
+                  ]
+        roundDownIfNeeded =    -- [q, 2^b, a, ...]
+          [ M.Dup 0            -- [q, q, 2^b, a, ...]
+          , M.Swap 2           -- [2^b, q, q, a, ...]
+          , M.IMul             -- [q*2^b, q, a, ...]
+          , M.MoveUp 2         -- [a, q*2^b, q, ...]
+          , M.Swap 1           -- [q*2^b, a, q, ...]
+          , M.ISub             -- [a - q*2^b, q, ...] = [r, q, ...]
+
+          , M.IEq (Just 0)  -- [r==0, q, ...]
+          , M.If True       -- [q, ...]
+              [ M.Dup 0, M.Drop ] -- [q, ...]
+              [ M.Push 1, M.ISub ] -- [q-1, ...]
+          ]
+    fmap (\xs -> prelude ++ xs ++ roundDownIfNeeded) <$> translateIBinOp W.BS32 W.IDivS
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [Ctx] [M.Instruction])
