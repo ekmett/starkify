@@ -21,7 +21,8 @@ library
     W2M,
     W2M.Stack,
     Count,
-    Tools
+    Tools,
+    WASI
   hs-source-dirs:     src
   build-depends:      base >=4.13 && <5,
                       bytestring,

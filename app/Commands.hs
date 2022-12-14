@@ -45,7 +45,7 @@ runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ 
 
   masmMod <- runValidation $ do
     standardValidator wasmMod
-    toMASM checkImports wasmMod
+    toMASM wasmMod
 
   when dumpMasmAst $
     dumps "MASM AST" (lines . T.unpack $ pShow masmMod)
@@ -136,7 +136,6 @@ runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp 
    masmMod <- runBuild $
      BuildOpts { buildInFile = interpInFile,
                  buildOutMasmFile = masmFile,
-                 checkImports = True,
                  dumpWasm = idumpWasm,
                  dumpWasmAst = idumpWasmAst,
                  dumpMasm = idumpMasm,

@@ -24,15 +24,13 @@ type ModName = Text
 
 data Module = Module
   { moduleImports :: [ModName]
-  , moduleProcs :: [Proc]
+  , moduleProcs :: [(ProcName, Proc)]
   , moduleProg  :: Program
   }
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 data Proc = Proc
-  { procID      :: Int
-  , procName    :: Maybe ProcName
-  , procNLocals :: Int
+  { procNLocals :: Int
   , procInstrs  :: [Instruction]
   }
   deriving (Eq, Ord, Show, Generic, Typeable)
@@ -53,6 +51,7 @@ data Instruction
     body :: [Instruction]
   }
 
+  | AdvPush Word32 -- adv_push.n
   | Push Word32   -- push.n
   | Swap Word32 -- swap[.i]
   | Drop -- drop
@@ -87,6 +86,7 @@ data Instruction
   | ILt64 | IGt64 | ILte64 | IGte64
 
   | Assert
+  | AssertZ
   deriving (Eq, Ord, Show, Generic, Typeable)
 
 newtype PpMASM a = PpMASM {runPpMASM :: Writer (DList.DList String) a}
@@ -112,9 +112,8 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
           tell $ DList.fromList $ fmap (("use."++) . unpack) (moduleImports m)
           traverse_ ppProc (moduleProcs m)
           ppProgram (moduleProg m)
-        ppProc p = do
-          let procname = maybe ("func" ++ show (procID p)) T.unpack (procName p)
-          [ "proc." ++ procname ++ "." ++ show (procNLocals p) ]
+        ppProc (name, p) = do
+          [ "proc." ++ T.unpack name ++ "." ++ show (procNLocals p) ]
           indent $ traverse_ ppInstr (procInstrs p)
           "end"
         ppProgram p = do
@@ -138,6 +137,7 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr (LocStore n) = [ "loc_store." ++ show n ]
         ppInstr (LocLoad n) = [ "loc_load." ++ show n ]
 
+        ppInstr (AdvPush n) = [ "adv_push." ++ show n ]
         ppInstr (Push n) = [ "push." ++ show n ]
         ppInstr (Swap n) = [ "swap" ++ if n == 1 then "" else "." ++ show n ]
         ppInstr Drop = "drop"
@@ -184,3 +184,4 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr IXor64 = "exec.u64::checked_xor"
 
         ppInstr Assert = "assert"
+        ppInstr AssertZ = "assertz"

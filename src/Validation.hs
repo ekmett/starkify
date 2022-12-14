@@ -1,4 +1,6 @@
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedStrings #-}
+
 module Validation where
 
 import Control.Monad.Validate
@@ -38,7 +40,7 @@ bad e = do
   refute [Error ctxs e]
 
 data Ctx =
-    InFunction (Maybe LT.Text) Natural -- func name, func id
+    InFunction Int -- func name, func id
   | GlobalsInit
   | DatasInit
   | ImportsCheck
@@ -67,6 +69,7 @@ data ErrorData
   | UnsupportedImport LT.Text LT.Text LT.Text
   | WasmStackProblem (StackProblem [Ctx])
   | UnsupportedArgType WASM.ValueType
+  | NamedGlobalRef LT.Text
   deriving Show
 
 data Error e = Error
@@ -88,6 +91,7 @@ errIdx e = case e of
   UnsupportedImport {} -> 9
   WasmStackProblem _ -> 10
   UnsupportedArgType _ -> 11
+  NamedGlobalRef _ -> 12
 
 badFPOp :: String -> V a
 badFPOp s = bad (FPOperation s)
@@ -101,8 +105,18 @@ badNoMain = bad NoMain
 badNoMultipleMem :: V a
 badNoMultipleMem = bad NoMultipleMem
 
-badImport :: LT.Text -> LT.Text -> LT.Text -> V a
-badImport imodule iname idesc = bad (UnsupportedImport imodule iname idesc)
+badImport :: Import -> V a
+badImport (Import imodule iname idesc) = bad (UnsupportedImport imodule iname (descType idesc))
+
+badNamedGlobalRef :: LT.Text -> V a
+badNamedGlobalRef = bad . NamedGlobalRef
+
+descType :: ImportDesc -> LT.Text
+descType idesc = case idesc of
+                   ImportFunc _ -> "function"
+                   ImportTable _ -> "table"
+                   ImportMemory _ -> "memory"
+                   ImportGlobal _ -> "global"
 
 failsStandardValidation :: WASM.ValidationError -> V a
 failsStandardValidation e = bad (StdValidation e)
@@ -151,6 +165,8 @@ ppErrData (WasmStackProblem (StackEmpty _)) =
   "stack problem: expected non empty stack"
 ppErrData (UnsupportedArgType t) =
   "unsupported argument type: " ++ show t
+ppErrData (NamedGlobalRef n) =
+  "undefined global variable: " ++ show n
 
 ppErr :: Error ErrorData -> [String]
 ppErr e =
@@ -163,7 +179,7 @@ ppErr e =
   where red s = "\ESC[0;31m" ++ s ++ "\ESC[0m"
 
 ppErrCtx :: Ctx -> String
-ppErrCtx (InFunction mname i) = "of function " ++ show i ++ maybe "" (\name -> " (" ++ LT.unpack name ++ ")") mname
+ppErrCtx (InFunction i) = "of function " ++ show i
 ppErrCtx DatasInit = "in data section"
 ppErrCtx GlobalsInit = "in globals initialisation"
 ppErrCtx ImportsCheck = "in imports"

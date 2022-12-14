@@ -5,22 +5,22 @@
 
 module W2M where
 
-import Data.Bifunctor (first)
+import Data.Bifunctor (first, second)
 import Control.Applicative
 import Control.Monad.Except
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
 import Data.Foldable
-import Data.Functor ((<&>))
 import Data.List (nub)
 import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Maybe (catMaybes, maybeToList, mapMaybe)
+import Data.Maybe (catMaybes, maybeToList)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
-import Data.Vector.Unboxed (Vector)
-import Data.Vector.Unboxed qualified as V
+import qualified Data.Text.Lazy as T
+import Data.Vector (Vector, (!), (!?))
+import Data.Vector qualified as V
 import Data.Word (Word8, Word32)
 import GHC.Natural (Natural)
 import Language.Wasm.Structure qualified as W
@@ -31,57 +31,65 @@ import Tools (dfs)
 import Validation
 import W2M.Stack (StackElem(..), StackType, StackProblem(..), StackFun)
 import W2M.Stack qualified as WStack
+import qualified WASI
 
-import Data.Text.Lazy qualified  as T
 import Control.Monad.Reader
 
 type WasmAddr = Natural
 type MasmAddr = Word32
 type LocalAddrs = Map WasmAddr (StackElem, [MasmAddr])
-type FunId = Natural
 type FunName = Text
+type Function = Either W.Import W.Function
 
-data WasmImportedFun = WIF
-  { wifModule :: Text
-  , wifName   :: Text
-  , wifTy     :: W.FuncType
-  } deriving (Eq, Show)
+-- Note: Wasm modules may fail to compile if they contain > 2^29 functions.
 
-toMASM :: Bool -> W.Module -> V M.Module
-toMASM checkImports m = do
+toMASM :: W.Module -> V M.Module
+toMASM m = do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
-  when checkImports $ inContext ImportsCheck $ checkImps (W.imports m)
   globalsInit <- inContext GlobalsInit getGlobalsInit
   datasInit <- inContext DatasInit getDatasInit
-  when (null mainFunctions) $ error "No start function or 'main' function found in WASM module, cannot proceed."
+  when (null entryFunctions) $ error "No start function or 'main' function found in WASM module, cannot proceed."
+  procs <- catMaybes <$> traverse (\ idx -> fmap (procName idx,) <$> fun2MASM idx (allFunctions ! idx)) (toList sortedFunctions)
+  methodInits <- sequence [ mapM translateGlobals (WASI.init method) | (_, Left method) <- procs ]
+  let (procNames, procs') = unzip $ fmap (second translateProc) procs
 
   M.Module ["std::sys", "std::math::u64"]
-    <$> fmap catMaybes (traverse fun2MASM sortedFuns)
+    <$> (zip procNames <$> sequence procs')
     -- TODO: Do we need to perform stack cleanup even if proc_exit is invoked?
-    <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec mainFunName ] ++ stackCleanUp))
+    <*> return (M.Program (globalsInit ++ datasInit ++ concat methodInits ++ fmap (M.Exec . procName) entryFunctions))
 
-  where checkImps
-          = traverse_ (\(W.Import imodule iname idesc) -> badImport imodule iname $ descType idesc)
+  where wasiGlobals :: [Text]
+        wasiGlobals = [ g | (Left (Just method)) <- first wasiImport <$> fmap (allFunctions !) (toList sortedFunctions)
+                          , g <- WASI.globals method ]
 
-        descType idesc = case idesc of
-          W.ImportFunc _t -> "function"
-          W.ImportTable _t -> "table"
-          W.ImportMemory _l -> "memory"
-          W.ImportGlobal _g -> "global"
+        wasiImport :: W.Import -> Maybe WASI.Method
+        wasiImport (W.Import module' name _) = Map.lookup name =<< Map.lookup module' WASI.library
 
         globalsAddrMap :: Vector MasmAddr
+        wasiGlobalsAddrMap :: Map Text MasmAddr
         memBeginning :: MasmAddr
-        (globalsAddrMap, memBeginning) = first V.fromList $ foldl' f ([], 0) (W.globals m)
+        (wasiGlobalsAddrMap, memBeginning') = first Map.fromList $ foldl' f ([], 0) wasiGlobals
+          where f (xs, n) name = (xs ++ [(name, n)], n+1)
+        (globalsAddrMap, memBeginning) = first V.fromList $ foldl' f ([], memBeginning') (W.globals m)
           where f (xs, n) globl_i =
                   let ncells = case W.globalType globl_i of
                                  W.Const t -> numCells t
                                  W.Mut   t -> numCells t
                   in (xs ++ [n], n+ncells)
 
-        callGraph :: Map FunId (Set FunId)
-        callGraph = Map.fromListWith (<>) $
-          [ (caller, Set.singleton callee)
-          | (caller, (_mname, Left (W.Function {body}))) <- Map.toList allFunctionsMap
+        translateGlobals :: WASI.Instruction -> V M.Instruction
+        translateGlobals (WASI.M i) = pure i
+        translateGlobals (WASI.Load n) = maybe (badNamedGlobalRef n) (pure . M.MemLoad . Just) (Map.lookup n wasiGlobalsAddrMap)
+        translateGlobals (WASI.Store n) = maybe (badNamedGlobalRef n) (pure . M.MemStore . Just) (Map.lookup n wasiGlobalsAddrMap)
+
+        translateProc :: Either WASI.Method M.Proc -> V M.Proc
+        translateProc (Left method) = M.Proc (WASI.locals method) <$> mapM translateGlobals (WASI.body method)
+        translateProc (Right p) = pure p
+
+        callGraph :: Map Int (Set Int)
+        callGraph = Map.fromListWith (<>)
+          [ (caller, Set.singleton (fromIntegral callee))
+          | (caller, Right (W.Function {body})) <- V.toList $ V.indexed allFunctions
           , W.Call callee <- body
           ]
         -- enumerate x = x : concatMap enumerate [ y | y <- maybe [] Set.toList (Map.lookup x callGraph) ]
@@ -90,23 +98,20 @@ toMASM checkImports m = do
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
         -- currently pass input to the main function, we can proceed if either is present (and we
         -- should use both if both are present).
-        mainFunctions = nub (maybeToList startFunId <> maybeToList mainFunId)
+        entryFunctions = fromIntegral <$> nub (maybeToList startFunIdx <> maybeToList mainFunIdx)
 
-        mainFunId
-          | Just mainId <- Map.lookup "main" functionIdsMap = Just mainId
-          | Just mainId <- Map.lookup "_start" functionIdsMap = Just mainId
-          | otherwise = Nothing
+        mainFunIdx = lookup "main" exportedFunctions <|> lookup "_start" exportedFunctions
 
-        startFunId
+        exportedFunctions :: [(FunName, W.FuncIndex)]
+        exportedFunctions = [(name, idx) | (W.Export name (W.ExportFunc idx)) <- W.exports m]
+
+        startFunIdx
           | Just (W.StartFunction k) <- W.start m = Just k
           | otherwise = Nothing
 
-        sortedFuns :: [(FunId, Maybe FunName, W.Function)]
-        sortedFuns = reverse $ catMaybes $ concatMap (`dfs` callGraph) mainFunctions <&> \name ->
-          case Map.lookup name allFunctionsMap of
-                    Just (mname, Left f) -> Just (name, mname, f)
-                    -- TODO(Matthias): Do we need to handle problems more carefully here?
-                    _ -> Nothing
+        -- Miden requires procedures to be defined before any execs that reference them.
+        sortedFunctions :: [Int]
+        sortedFunctions = nub $ reverse $ concatMap (`dfs` callGraph) entryFunctions
 
         numCells :: W.ValueType -> Word32
         numCells t = case t of
@@ -146,59 +151,37 @@ toMASM checkImports m = do
                         W.Const ct -> ct
                         W.Mut mt -> mt
 
-        importedName modl nm = modl <> "." <> nm
-        importedFuns = [ (mdl, nm, W.types m !! fromIntegral tyidx)
-                       | W.Import mdl nm (W.ImportFunc tyidx) <- W.imports m
-                       ]
+        -- "Functions are referenced through function indices, starting with the smallest index not referencing a function import."
+        --                                              (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-module)
+        -- "Definitions are referenced with zero-based indices."
+        --                                             (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-funcidx)
+        allFunctions :: Vector Function
+        allFunctions = V.fromList $
+          [ Left f | f@(W.Import _ _ (W.ImportFunc _)) <- W.imports m ] <>
+          [ Right f | f <- W.functions m ]
 
-        allFuns :: [(FunId, Maybe FunName, Either W.Function WasmImportedFun)]
-        allFuns =
-          zipWith (\k (mdl, nm, t) -> (k, Just (importedName mdl nm), Right $ WIF mdl nm t))
-                  [0..]
-                  importedFuns ++
-          [ (fromIntegral k, lkpFunName (fromIntegral k), Left f)
-          | (k, f) <- zip [(length importedFuns)..] (W.functions m)
-          ]
+        types :: Vector W.FuncType
+        types = V.fromList $ W.types m
 
-        lkpFunName i = go (W.exports m)
-          where go [] = Nothing
-                go (e:es) = case e of
-                  W.Export name (W.ExportFunc j)
-                    | i == j -> Just name
-                  _ -> go es
+        emptyFunctions :: Set Int
+        emptyFunctions = Set.fromList $ V.toList $ V.findIndices emptyF allFunctions
+         where emptyF (Right (W.Function _ _ [])) = True
+               emptyF _ = False
 
-        allFunctionsMap :: Map FunId (Maybe FunName, Either W.Function WasmImportedFun)
-        allFunctionsMap = Map.fromList [ (i, (n, f)) | (i, n, f) <- allFuns ]
+        functionType :: Function -> Maybe W.FuncType
+        functionType (Left (W.Import _ _ (W.ImportFunc idx))) = types !? fromIntegral idx
+        functionType (Right (W.Function {funcType})) = types !? fromIntegral funcType
+        functionType _ = Nothing
 
-        emptyFunctions :: Set FunId
-        emptyFunctions = Set.fromList
-          [ fid
-          | (fid, (_, Left (W.Function _ _ []))) <- Map.toList allFunctionsMap
-          ]
+        procName :: Int -> M.ProcName
+        procName i = "f" <> T.pack (show i)
 
-        functionNamesMap :: Map FunId FunName
-        functionNamesMap = Map.fromList
-          [ (i, fname)
-          | (i, Just fname, _t) <- allFuns
-          ]
-
-        functionIdsMap :: Map FunName FunId
-        functionIdsMap = Map.fromList . map swap . Map.toList $ functionNamesMap
-          where swap (a, b) = (b, a)
-
-        functionTypesMap :: Map FunId W.FuncType
-        functionTypesMap = allFunctionsMap <&> \case
-                  (_, Left (W.Function tyIdx _ _)) -> W.types m !! fromIntegral tyIdx
-                  (_, Right (WIF _mdl _nm t)) -> t
-
-        fixName t
-          | Just t' <- T.stripPrefix "__" t = "zz__" <> t'
-          | otherwise                       = t
-
-        fun2MASM :: (FunId, Maybe Text, W.Function) -> V (Maybe M.Proc)
-        fun2MASM (_funid, _mfname, W.Function _         _         []) = return Nothing
-        fun2MASM (funid, mfname, W.Function _funTyIdx localsTys body) = inContext (InFunction mfname (fromIntegral funid)) $ do
-          let wasm_args = maybe [] W.params (Map.lookup funid functionTypesMap)
+        fun2MASM :: Int -> Function -> V (Maybe (Either WASI.Method M.Proc))
+        fun2MASM _   (Left i) = inContext ImportsCheck $ maybe (badImport i) (pure . Just . Left) (wasiImport i)
+        fun2MASM _   (Right (W.Function _ _         [])) = return Nothing
+        -- TODO: Add back function name to context.
+        fun2MASM idx (Right (W.Function typ localsTys body)) = inContext (InFunction idx) $ do
+          let wasm_args = W.params (W.types m !! fromIntegral typ)
               wasm_locals = localsTys
 
               localAddrMap :: LocalAddrs
@@ -218,13 +201,13 @@ toMASM checkImports m = do
               prelude = reverse $ concat
                 [ case Map.lookup (fromIntegral k) localAddrMap of
                     Just (_t, is) -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
-                    _ -> error ("impossible: prelude of procedure " ++ show (funid, mfname) ++ ", local variable " ++ show k ++ " not found?!")
+                    -- TODO: Add back function name to error.
+                    _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
                 | k <- [0..(length wasm_args - 1)]
                 ]
 
           instrs <- translateInstrs [] localAddrMap body
-          return $ Just (M.Proc (fromIntegral funid) (fmap fixName mfname) (fromIntegral nlocalCells) (prelude ++ instrs))
-
+          return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
 
         translateInstrs :: StackType -> LocalAddrs -> W.Expression -> V [M.Instruction]
         translateInstrs stack0 locals wasmInstrs = do
@@ -242,20 +225,22 @@ toMASM checkImports m = do
             -- TODO: make sure finalT is the function's return type?
 
         translateInstr :: LocalAddrs -> W.Instruction Natural -> V (StackFun [Ctx] [M.Instruction])
-        translateInstr _ (W.Call i) = case Map.lookup i functionTypesMap of
-          Just (W.FuncType params res) -> do
-              let mname = Map.lookup (fromIntegral i) functionNamesMap
-              params' <- checkTypes params
-              res' <- checkTypes res
-              let procname = maybe (T.pack $ "func" ++ show i) fixName mname
-                  instrs =
-                    if Set.member i emptyFunctions
-                      then concat [ if t == SI64 then [ M.Drop, M.Drop ] else [ M.Drop ]
-                                  | t <- params'
-                                  ]
-                      else [M.Exec procname]
-              assumingPrefix (reverse params') $ \t -> (instrs, res' ++ t)
-          Nothing -> badWasmFunctionCallIdx (fromIntegral i)
+        translateInstr _ (W.Call idx) = let i = fromIntegral idx in
+          case allFunctions !? i of
+            Just f -> do
+              case functionType f of
+                Just (W.FuncType params res) -> do
+                  params' <- checkTypes params
+                  res' <- checkTypes res
+                  let instrs =
+                        if Set.member i emptyFunctions
+                          then concat [ if t == SI64 then [ M.Drop, M.Drop ] else [ M.Drop ]
+                                      | t <- params'
+                                      ]
+                          else [M.Exec $ procName i]
+                  assumingPrefix (reverse params') $ \t -> (instrs, res' ++ t)
+                Nothing -> badWasmFunctionCallIdx i
+            Nothing -> badWasmFunctionCallIdx i
         translateInstr _ (W.I32Const w32) = noPrefix $ \t -> ([M.Push w32], SI32:t)
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
         translateInstr _ W.I32Eqz =
@@ -734,14 +719,6 @@ translateIRelOp W.BS32 op = case op of
     , SI32 : t
     )
   _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
-
--- necessary because of https://github.com/maticnetwork/miden/issues/371
--- the stack must be left with exactly 16 entries at the end of the program
--- for proof generaton, so we remove a bunch of entries accordingly.
-stackCleanUp :: [M.Instruction]
-stackCleanUp = [] -- [M.TruncateStack]
--- stackCleanUp n = concat $ replicate n [ M.Swap n', M.Drop ]
---   where n' = fromIntegral n
 
 checkTypes :: [W.ValueType] -> V [StackElem]
 checkTypes = traverse f
