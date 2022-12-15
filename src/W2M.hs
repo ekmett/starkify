@@ -10,15 +10,15 @@ import Control.Applicative
 import Control.Monad.Except
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
+import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable
-import Data.List (nub)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, maybeToList)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
-import qualified Data.Text.Lazy as T
+import Data.Text.Lazy qualified as T
 import Data.Vector (Vector, (!), (!?))
 import Data.Vector qualified as V
 import Data.Word (Word8, Word32)
@@ -31,7 +31,7 @@ import Tools (dfs)
 import Validation
 import W2M.Stack (StackElem(..), StackType, StackProblem(..), StackFun)
 import W2M.Stack qualified as WStack
-import qualified WASI
+import WASI qualified
 
 import Control.Monad.Reader
 
@@ -98,7 +98,7 @@ toMASM m = do
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
         -- currently pass input to the main function, we can proceed if either is present (and we
         -- should use both if both are present).
-        entryFunctions = fromIntegral <$> nub (maybeToList startFunIdx <> maybeToList mainFunIdx)
+        entryFunctions = fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
 
         mainFunIdx = lookup "main" exportedFunctions <|> lookup "_start" exportedFunctions
 
@@ -111,7 +111,7 @@ toMASM m = do
 
         -- Miden requires procedures to be defined before any execs that reference them.
         sortedFunctions :: [Int]
-        sortedFunctions = nub $ reverse $ concatMap (`dfs` callGraph) entryFunctions
+        sortedFunctions = reverse $ nubOrd $ concatMap (`dfs` callGraph) entryFunctions
 
         numCells :: W.ValueType -> Word32
         numCells t = case t of
