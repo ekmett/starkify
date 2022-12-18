@@ -646,6 +646,7 @@ translateIBinOp W.BS32 op = case op of
   W.IAnd  -> stackBinop SI32 M.IAnd
   W.IOr   -> stackBinop SI32 M.IOr
   W.IXor  -> stackBinop SI32 M.IXor
+  W.IRemU -> stackBinop SI32 M.IMod
   W.IDivU -> stackBinop SI32 M.IDiv
   W.IDivS -> assumingPrefix [SI32, SI32] $ \t ->
                                    -- [b, a, ...]
