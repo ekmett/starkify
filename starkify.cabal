@@ -19,7 +19,6 @@ library
     MASM.Miden,
     Validation,
     W2M,
-    W2M.Stack,
     Count,
     Tools,
     WASI
