@@ -73,6 +73,7 @@ data Instruction
   | ISub -- "u32checked_sub"
   | IMul -- u32checked_mul
   | IDiv -- u32checked_div
+  | IMod -- u32checked_mod
   | IDivMod (Maybe Word32) -- u32checked_divmod
   | IShL | IShR -- u32checked_{shl, shr}
   | IAnd | IOr | IXor | INot -- u32checked_{and, or, xor, not}
@@ -150,6 +151,7 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr ISub = "u32checked_sub"
         ppInstr IMul = "u32checked_mul"
         ppInstr IDiv = "u32checked_div"
+        ppInstr IMod = "u32checked_mod"
         ppInstr (IDivMod mk) = [ "u32checked_divmod" ++ maybe "" (\k -> "." ++ show k) mk ]
         ppInstr IShL = "u32checked_shl"
         ppInstr IShR = "u32checked_shr"
