@@ -47,12 +47,10 @@ newtype Program = Program { programInstrs :: [Instruction] }
 -- TODO(Matthias): perhaps annotate stack effect?
 data Instruction
   = Exec ProcName -- exec.foo
-  | If { -- if.[condition]
-    condition :: Bool,
+  | IfTrue { -- if.true
     thenBranch :: [Instruction],
     elseBranch :: [Instruction] }
-  | While {
-    condition :: Bool,
+  | WhileTrue { -- while.true
     body :: [Instruction]
   }
 
@@ -125,15 +123,15 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
           "end"
         ppInstr :: Instruction -> PpMASM ()
         ppInstr (Exec pname) = [ "exec." ++ unpack pname ]
-        ppInstr (If {condition, thenBranch, elseBranch}) = do
-          ["if." ++ fmap toLower (show condition)]
+        ppInstr (IfTrue {thenBranch, elseBranch}) = do
+          ["if.true"]
           indent $ traverse_ ppInstr thenBranch
           unless (null elseBranch) $ do
             "else"
             indent $ traverse_ ppInstr elseBranch
           "end"
-        ppInstr (While {condition, body}) = do
-          ["while." ++ fmap toLower (show condition)]
+        ppInstr (WhileTrue {body}) = do
+          ["while.true"]
           indent $ traverse_ ppInstr body
           "end"
 
