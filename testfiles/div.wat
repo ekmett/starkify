@@ -10,9 +10,6 @@
 
     i32.const 2
     i32.shr_s ;; -1
-
-    i32.const 2
-    i32.div_s ;; 0
   )
   (memory (;0;) 2)
   (export "main" (func 0))

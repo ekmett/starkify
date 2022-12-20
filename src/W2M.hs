@@ -647,6 +647,8 @@ translateIBinOp W.BS32 op = case op of
   W.IOr   -> stackBinop SI32 M.IOr
   W.IXor  -> stackBinop SI32 M.IXor
   W.IDivU -> stackBinop SI32 M.IDiv
+
+  -- https://bisqwit.iki.fi/story/howto/bitmath/#DviIdivDiviSignedDivision
   W.IDivS -> assumingPrefix [SI32, SI32] $ \t ->
                                    -- [b, a, ...]
     ( [ M.Dup 1 ] ++ computeAbs ++ -- [abs(a), b, a, ...]
@@ -667,20 +669,11 @@ translateIBinOp W.BS32 op = case op of
     ( [ M.Dup 1                  -- [a, b, a, ...]
       ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
       [ M.If True                -- [b, a, ...]
-          ([ M.Dup 1             -- [a, b, a, ...]
-           , M.Push 2, M.IMod    -- [a mod 2, b, a, ...]
-           , M.MoveUp 2          -- [a, a mod 2, b, ...]
-           ] ++ computeNegate ++ -- [-a, a mod 2, b, ...]
-           [ M.MoveUp 2          -- [b, -a, a mod 2, ...]
-           , M.IShR              -- [(-a) >> b, a mod 2, ...]
-           ] ++ computeNegate ++ -- [ -((-a) >> b), a mod 2, ...]
-           [ M.Swap 1            -- [a mod 2, -((-a) >> b), ...]
-           , M.If True           -- [-((-a) >> b), ...]
-               [ M.Push 1, M.ISub -- [-((-a) >> b) - 1, ...]
-               ]
-               [ M.Dup 0, M.Drop ] -- [-((-a) >> b), ...]
-           ]
-          )
+          [ M.Swap 1, M.INot     -- [~a, b, ...]
+          , M.Swap 1             -- [b, ~a, ...]
+          , M.IShR               -- [~a >> b, ...]
+          , M.INot               -- [~(~a >> b), ...]
+          ]
           [ M.IShR ]            -- [ a >> b, ...]
       ]
     , SI32 : t

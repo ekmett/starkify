@@ -1,11 +1,15 @@
 {-# LANGUAGE GADTs, ScopedTypeVariables #-}
-{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE OverloadedStrings, TypeApplications #-}
 module Arith where
 
-import Data.Bits ( Bits(shiftR, shiftL) )
+import Data.Bits ( Bits(..) )
 import Data.Int ( Int32, Int64 )
+import Data.Maybe (listToMaybe)
 import Data.Word ( Word32, Word64 )
 import GHC.Natural ( Natural )
+import System.IO ( hSetBuffering, stdout, BufferMode(LineBuffering) )
+import Test.Hspec ( hspec, describe )
+import Test.Hspec.QuickCheck ( prop, modifyMaxSuccess )
 import Test.QuickCheck
     ( Gen,
       Property,
@@ -13,17 +17,15 @@ import Test.QuickCheck
       ioProperty,
       Arbitrary(arbitrary),
       chooseInt,
-      frequency, NonZero (..), Negative (..) )
+      frequency, NonZero (..) )
 
+import qualified Language.Wasm.Interpreter as W
 import qualified Language.Wasm.Structure as W
+
 import qualified Eval as Miden
 import Validation (runValidation)
 import W2M (toMASM)
 import MASM.Interpreter ( fromFakeW64, FakeW64(FakeW64) )
-import Data.Maybe (listToMaybe)
-import Test.Hspec
-import Test.Hspec.QuickCheck
-import System.IO
 
 data Expr t where
     ConstU32 :: Word32           -> Expr Word32
@@ -54,46 +56,47 @@ data Ty = W32 | I32 | W64 | I64
 
 class Typed t where
     typeOf :: Expr t -> Ty
-    fromStack :: [Word32] -> Maybe t
+    fromMStack :: [Word32] -> Maybe t
+    fromWStack :: [W.Value] -> Maybe t
 
 instance Typed Word32 where
     typeOf _ = W32
-    fromStack = listToMaybe
+    fromMStack = listToMaybe
+    fromWStack s = case s of
+      W.VI32 w : _ -> Just w
+      _            -> Nothing
 instance Typed Int32 where
     typeOf _ = I32
-    fromStack = fmap fromIntegral . listToMaybe
+    fromMStack = fmap fromIntegral . listToMaybe
+    fromWStack = fmap fromIntegral . (fromWStack :: [W.Value] -> Maybe Word32)
 instance Typed Word64 where
     typeOf _ = W64
-    fromStack [hi, lo] = Just $ fromFakeW64 (FakeW64 hi lo)
-    fromStack _        = Nothing
+    fromMStack [hi, lo] = Just $ fromFakeW64 (FakeW64 hi lo)
+    fromMStack _        = Nothing
+    fromWStack s = case s of
+      W.VI64 w : _ -> Just w
+      _            -> Nothing
 instance Typed Int64 where
     typeOf _ = I64
-    fromStack = fmap fromIntegral . (fromStack :: [Word32] -> Maybe Word64)
-
-eval :: (Integral t, Bits t, Typed t) => Expr t -> t
-eval e = case e of
-    ConstU32 w -> w
-    ConstI32 i -> i
-    ConstU64 w -> w
-    ConstI64 i -> i
-    Add a b -> eval a + eval b
-    Sub a b -> eval a - eval b
-    Mul a b -> eval a * eval b
-    Div a b ->
-      let ea = eval a
-          eb = eval b
-      in signum ea * signum eb * (abs ea `div` abs eb)
-    Shl a n -> shiftL (eval a) n
-    Shr a n -> shiftR (eval a) n
+    fromMStack = fmap fromIntegral . (fromMStack :: [Word32] -> Maybe Word64)
+    fromWStack = fmap fromIntegral . (fromWStack :: [W.Value] -> Maybe Word64)
 
 toWasm :: Typed t => Expr t -> W.Module
 toWasm expr = W.Module
-  { types = [W.FuncType [] [W.I32]]
-  , tables = [], mems = [], globals = [], elems = [], datas = [], start = Just (W.StartFunction 0), imports = [], exports = []
+  { types = [W.FuncType [] [retty]]
+  , start = Nothing
+  , exports = [ W.Export "main" (W.ExportFunc 0) ]
   , functions = [ W.Function 0 [] (exprWasm expr) ]
+  , tables = [], mems = [], globals = [], elems = [], datas = [], imports = []
   }
 
-  where exprWasm :: Typed t => Expr t -> [W.Instruction Natural]
+  where retty = case typeOf expr of
+          W32 -> W.I32
+          I32 -> W.I32
+          W64 -> W.I64
+          I64 -> W.I64
+    
+        exprWasm :: Typed t => Expr t -> [W.Instruction Natural]
         exprWasm e = case e of
             ConstU32 w -> [W.I32Const w]
             ConstI32 w -> [W.I32Const (fromIntegral w)]
@@ -148,31 +151,42 @@ toWasm expr = W.Module
                   xs = [W.I32Const (fromIntegral n), op]
               in exprWasm a ++ xs
 
-randomExpr :: (Num a, Ord a, Arbitrary a) => Int -> (a -> Expr a) -> Gen (Expr a)
-randomExpr 0 konst = konst <$> arbitrary
-randomExpr k konst =
-  frequency [ (1, randomExpr 0 konst)
-            , (7, Add <$> randomExpr (k-1) konst <*> randomExpr (k-1) konst)
-            , (7, Sub <$> randomExpr (k-1) konst <*> randomExpr (k-1) konst)
-            , (5, Mul <$> randomExpr (k-1) konst <*> randomExpr (k-1) konst)
-            , (4, Div <$> randomExpr (k-1) konst <*> (konst . getNonZero <$> arbitrary))
-            , (3, Shl <$> randomExpr (k-1) konst <*> chooseInt (1, 31))
-            , (2, Shr <$> randomExpr (k-1) konst <*> chooseInt (1, 31))
-            ]
+randomExpr :: forall a. (Arbitrary a, Num a, Eq a) => Int -> (a -> Expr a) -> Bool -> Gen (Expr a)
+randomExpr 0 konst _ = konst <$> arbitrary
+randomExpr k konst withShrDiv = frequency $
+  [ (1, randomExpr 0 konst withShrDiv)
+  , (7, Add <$> randomExpr (k-1) konst withShrDiv <*> randomExpr (k-1) konst withShrDiv)
+  , (7, Sub <$> randomExpr (k-1) konst withShrDiv <*> randomExpr (k-1) konst withShrDiv)
+  , (5, Mul <$> randomExpr (k-1) konst withShrDiv <*> randomExpr (k-1) konst withShrDiv)
+  , (3, Shl <$> randomExpr (k-1) konst withShrDiv<*> chooseInt (1, 31))
+  ] ++
+  if withShrDiv
+    then [ (4, Div <$> randomExpr (k-1) konst withShrDiv <*> (konst . getNonZero <$> arbitrary))
+         , (2, Shr <$> randomExpr (k-1) konst withShrDiv <*> chooseInt (1, 31))
+         ]
+    else [ (4, Div <$> randomExpr 0 konst withShrDiv <*> (konst . getNonZero <$> arbitrary))
+         , (2, Shr <$> randomExpr 0 konst withShrDiv <*> chooseInt (1, 3))
+         ] -- hopefully those more modest generators are enough to avoid the annoying corner cases...
+
+exprDepth :: Int
+exprDepth = 4
 
 instance Arbitrary (Expr Word32) where
-  arbitrary = randomExpr 4 ConstU32
+  arbitrary = randomExpr exprDepth ConstU32 True
 instance Arbitrary (Expr Int32) where
-  arbitrary = randomExpr 1 ConstI32
+  -- TODO: Turn 'False' to 'True' when our translation of signed division
+  --       can handle all corner cases. Until then we generate simpler signed
+  --       division/shift expressions.
+  arbitrary = randomExpr exprDepth ConstI32 False
 instance Arbitrary (Expr Word64) where
-  arbitrary = randomExpr 4 ConstU64
+  arbitrary = randomExpr exprDepth ConstU64 True
 instance Arbitrary (Expr Int64) where
-  arbitrary = randomExpr 4 ConstI64
+  arbitrary = randomExpr exprDepth ConstI64 False
 
 exprEvalCompile :: forall t. (Integral t, Bits t, Typed t, Show t) => Expr t -> Property
 exprEvalCompile e = ioProperty $ do
-  let reference = eval e
-      wmod = toWasm e
+  let wmod = toWasm e
+  Just reference <- maybe Nothing fromWStack <$> Miden.simulateWASM wmod
   -- putStrLn $ "expr: " ++ show e ++ "  |   result = " ++ show reference
   mres <- runValidation (toMASM True wmod) >>= Miden.runMiden
   case mres of
@@ -180,21 +194,29 @@ exprEvalCompile e = ioProperty $ do
     Right res -> return $ check res reference
 
   where check :: [Word32] -> t -> Property
-        check midenstack val = case fromStack midenstack of
+        check midenstack val = case fromMStack midenstack of
           Just res -> val === res
           Nothing -> error "couldn't extract result"
 
+newtype Pow = Pow Int
+  deriving Show
+
+instance Arbitrary Pow where
+  arbitrary = Pow <$> chooseInt (1, 31)
+
+numTestCases :: Int
+numTestCases = 10000
 
 main :: IO ()
 main = do
   hSetBuffering stdout LineBuffering
   hspec $
-    describe "arithmetic property tests" $ do
-      prop "starkify handles Word32 computations correctly" $
+    describe "starkify preserves arithmetic computations results" $ modifyMaxSuccess (const numTestCases) $ do
+      prop "for unsigned 32 bits integers" $
         exprEvalCompile @Word32
-      prop "starkify handles Int32 computations correctly" $
+      prop "for signed 32 bits integers" $
         exprEvalCompile @Int32
-      -- prop "starkify handles Word64 computations correctly" $
+      -- prop "for unsigned 64 bits integers" $
       --   exprEvalCompile @Word64
-      -- prop "starkify handles Int64 computations correctly" $
+      -- prop "for signed 64 bits integer" $
       --   exprEvalCompile @Int64
