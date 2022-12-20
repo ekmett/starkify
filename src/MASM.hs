@@ -8,7 +8,6 @@ module MASM where
 
 import Control.Monad.Writer.Strict
 
-import Data.Char (toLower)
 import Data.DList qualified as DList
 import Data.Text.Lazy qualified as T
 import Data.Foldable

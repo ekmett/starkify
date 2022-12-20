@@ -669,7 +669,7 @@ translateIBinOp W.BS32 op = case op of
   W.IShrS -> assumingPrefix [SI32, SI32] $ \t -> -- [b, a, ...]
     ( [ M.Dup 1                  -- [a, b, a, ...]
       ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
-      [ M.If True                -- [b, a, ...]
+      [ M.IfTrue                 -- [b, a, ...]
           [ M.Swap 1, M.INot     -- [~a, b, ...]
           , M.Swap 1             -- [b, ~a, ...]
           , M.IShR               -- [~a >> b, ...]
