@@ -55,7 +55,7 @@ toMASM checkImports m = do
 
   M.Module ["std::sys", "std::math::u64"]
     <$> fmap catMaybes (traverse fun2MASM sortedFuns)
-    <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec "main" ] ++ stackCleanUp))
+    <*> return (M.Program (globalsInit ++ datasInit ++ [ M.Exec mainFunName ] ++ stackCleanUp))
 
   where checkImps
           = traverse_ (\(W.Import imodule iname idesc) -> badImport imodule iname $ descType idesc)
@@ -82,9 +82,9 @@ toMASM checkImports m = do
           , W.Call callee <- body
           ]
         -- enumerate x = x : concatMap enumerate [ y | y <- maybe [] Set.toList (Map.lookup x callGraph) ]
-        mainFunId
-          | Just (W.StartFunction k) <- W.start m = k
-          | Just mainId <- Map.lookup "main" functionIdsMap = mainId
+        (mainFunId, mainFunName)
+          | Just (W.StartFunction k) <- W.start m = (k, "func" <> T.pack (show k))
+          | Just mainId <- Map.lookup "main" functionIdsMap = (mainId, "main")
           | otherwise = error "No start function in WASM module and no 'main', cannot proceed."
 
         sortedFuns :: [(FunId, Maybe FunName, W.Function)]
@@ -648,6 +648,8 @@ translateIBinOp W.BS32 op = case op of
   W.IXor  -> stackBinop SI32 M.IXor
   W.IRemU -> stackBinop SI32 M.IMod
   W.IDivU -> stackBinop SI32 M.IDiv
+
+  -- https://bisqwit.iki.fi/story/howto/bitmath/#DviIdivDiviSignedDivision
   W.IDivS -> assumingPrefix [SI32, SI32] $ \t ->
                                    -- [b, a, ...]
     ( [ M.Dup 1 ] ++ computeAbs ++ -- [abs(a), b, a, ...]
@@ -664,7 +666,19 @@ translateIBinOp W.BS32 op = case op of
       ]
     , SI32 : t
     )
-  W.IShrS -> fmap ([ M.Push 1, M.Swap 1, M.IShL] ++) <$> translateIBinOp W.BS32 W.IDivS
+  W.IShrS -> assumingPrefix [SI32, SI32] $ \t -> -- [b, a, ...]
+    ( [ M.Dup 1                  -- [a, b, a, ...]
+      ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
+      [ M.If True                -- [b, a, ...]
+          [ M.Swap 1, M.INot     -- [~a, b, ...]
+          , M.Swap 1             -- [b, ~a, ...]
+          , M.IShR               -- [~a >> b, ...]
+          , M.INot               -- [~(~a >> b), ...]
+          ]
+          [ M.IShR ]            -- [ a >> b, ...]
+      ]
+    , SI32 : t
+    )
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V (StackFun [Ctx] [M.Instruction])

@@ -1,6 +1,6 @@
 module TestFiles where
 
-import Eval (simulateWASM, simulateMASM)
+import Eval (simulateWASM)
 import MASM.Interpreter (runInterp, interpret, FakeW64(..), fromFakeW64)
 import MASM.Miden
 import Validation (runValidation)
@@ -79,7 +79,7 @@ compareWasmMasmResult expectedOutFile wmod = do
   mmod <- runValidation (toMASM True wmod)
   mmasmres <- runMiden mmod
   case (mwasmres, mmasmres) of
-    (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks vals stack 0
+    (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks vals stack (0 :: Integer)
     _ -> error ("unexpected results: " ++ show (mwasmres, mmasmres))
 
   where compareStacks [] masmstack _k = filter (/=0) masmstack `shouldBe` []
@@ -90,7 +90,7 @@ compareWasmMasmResult expectedOutFile wmod = do
           let masm_w64 = fromFakeW64 (FakeW64 masm_w64_hi masm_w64_lo)
           wasm_w64 `shouldBe` masm_w64
           compareStacks wasm_vs masm_vs (k+1)
-        compareStacks wasmstack masmstack k = error $ "cannot compare stacks: " ++ show (wasmstack, masmstack)
+        compareStacks wasmstack masmstack _k = error $ "cannot compare stacks: " ++ show (wasmstack, masmstack)
 
 checkOutput :: [Word32] -> [Word32] -> Expectation
 checkOutput expected actual = do

@@ -93,12 +93,36 @@ executable starkify
         NamedFieldPuns,
         DisambiguateRecordFields
 
-test-suite starkify-testfiles
+test-suite testfiles
   type:                exitcode-stdio-1.0
   hs-source-dirs:      tests
   main-is:             TestFiles.hs
   build-depends:       base, bytestring, directory, filepath, hspec, process, starkify, temporary, wasm
-  ghc-options:         -main-is TestFiles -threaded -rtsopts -with-rtsopts=-N
+  ghc-options:         -main-is TestFiles -threaded -rtsopts -with-rtsopts=-N -Wall
+  default-language:    Haskell2010
+  default-extensions:
+        ApplicativeDo,
+        LambdaCase,
+        TupleSections,
+        PartialTypeSignatures,
+        ImportQualifiedPost,
+        DeriveGeneric,
+        FlexibleInstances,
+        GeneralizedNewtypeDeriving,
+        StandaloneDeriving,
+        MultiParamTypeClasses,
+        FlexibleContexts,
+        TypeFamilies,
+        NamedFieldPuns,
+        DisambiguateRecordFields
+
+test-suite arith-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      tests
+  main-is:             Arith.hs
+  other-modules:       TestFiles
+  build-depends:       base, hspec, QuickCheck, starkify, temporary, wasm, filepath, directory, process, bytestring
+  ghc-options:         -main-is Arith -threaded -rtsopts -with-rtsopts=-N -Wall
   default-language:    Haskell2010
   default-extensions:
         ApplicativeDo,
