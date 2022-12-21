@@ -18,6 +18,7 @@ import Language.Wasm.Structure qualified as W
 import Language.Wasm.Validate qualified  as W
 
 import Data.Text.Lazy qualified as LT
+import Data.Word
 
 newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
@@ -42,6 +43,7 @@ data Ctx =
   | Typechecker
   | InInstruction Int (W.Instruction Natural) -- func id, instruction #
   | InBlock Block W.BlockType W.ResultType -- block kind, block type, parent block stack on block entry (the whole stack, not just the usable stack)
+  | CallIndirectFun
   deriving Show
 
 inContext :: Ctx -> Validation e a -> Validation e a
@@ -67,6 +69,10 @@ data ErrorData
   | EmptyStack
   | NamedGlobalRef LT.Text
   | BlockResultTooLarge Int
+  | NoMultipleTable
+  | UnsupportedElemDynOffset W.ElemSegment
+  | UnsupportedNonConsecutiveFuns Word32 W.FuncIndex Word32 W.FuncIndex
+  | BadStarkifyFun Int LT.Text
   deriving (Eq, Ord, Show)
 
 deriving instance Ord (W.Instruction Natural)
@@ -80,6 +86,7 @@ deriving instance Ord W.IRelOp
 deriving instance Ord W.FUnOp
 deriving instance Ord W.FBinOp
 deriving instance Ord W.FRelOp
+deriving instance Ord W.ElemSegment
 
 -- We need to do this manually, because Arrow ain't exported.
 -- Otherwise, we could do:
@@ -106,11 +113,18 @@ badNoMain = bad NoMain
 badNoMultipleMem :: V a
 badNoMultipleMem = bad NoMultipleMem
 
+
 badImport :: W.Import -> V a
 badImport (W.Import imodule iname idesc) = bad (UnsupportedImport imodule iname (descType idesc))
 
+badNoMultipleTable :: V a
+badNoMultipleTable = bad NoMultipleTable
+
 badNamedGlobalRef :: LT.Text -> V a
 badNamedGlobalRef = bad . NamedGlobalRef
+
+badStarkifyFun :: Int -> LT.Text -> V a
+badStarkifyFun i s = bad (BadStarkifyFun i s)
 
 descType :: W.ImportDesc -> LT.Text
 descType idesc = case idesc of
@@ -133,6 +147,12 @@ unsupportedMemAlign alig instr = bad (UnsupportedMemAlign alig instr)
 
 unsupportedArgType :: W.ValueType -> V a
 unsupportedArgType t = bad (UnsupportedArgType t)
+
+unsupportedElemDynOffset :: W.ElemSegment -> V a
+unsupportedElemDynOffset segment = bad (UnsupportedElemDynOffset segment)
+
+badFunsNotConsecutive :: Word32 -> W.FuncIndex -> Word32 -> W.FuncIndex -> V a
+badFunsNotConsecutive i fi j fj = bad (UnsupportedNonConsecutiveFuns i fi j fj)
 
 ppErrData :: ErrorData -> String
 ppErrData (FPOperation op) = "unsupported floating point operation: " ++ op
@@ -162,6 +182,12 @@ ppErrData (NamedGlobalRef n) =
   "undefined global variable: " ++ show n
 ppErrData (BlockResultTooLarge s) =
   "function result too large: " ++ show s
+ppErrData NoMultipleTable = "multiple tables not supported"
+ppErrData (UnsupportedElemDynOffset segment) =
+  "unsupported dynamic offset for elem segment: " ++ show segment
+ppErrData (UnsupportedNonConsecutiveFuns i fi j fj) =
+  "non consecutive functions #" ++ show fi ++ " (offset " ++ show i ++ ") and #" ++
+  show fj ++ " (offset " ++ show j ++ ")"
 
 ppErr :: Error ErrorData -> [String]
 ppErr e =
@@ -181,6 +207,7 @@ ppErrCtx Import = "in import"
 ppErrCtx Typechecker = "in typechecking"
 ppErrCtx (InInstruction k i) = "in instruction #" ++ show k ++ ": " ++ take 100 (show i) ++ "  ..."
 ppErrCtx (InBlock t _ _) = "of " <> show t
+ppErrCtx CallIndirectFun = "of generated indirect call function"
 
 type V = Validation (DList.DList (Error ErrorData))
 

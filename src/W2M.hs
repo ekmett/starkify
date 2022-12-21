@@ -5,7 +5,7 @@
 
 module W2M where
 
-import Data.Bifunctor (first, second)
+import Data.Bifunctor (second)
 import Control.Applicative
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -15,7 +15,7 @@ import Data.ByteString.Lazy qualified as BS
 import Data.Char (isAsciiLower)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable
-import Data.List (stripPrefix)
+import Data.List (stripPrefix, sortOn)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, maybeToList)
@@ -34,12 +34,17 @@ import MASM.Interpreter (toFakeW64, FakeW64 (..))
 import Tools (dfs)
 import Validation
 import WASI qualified
+-- import W2M.Stack (StackElem(..), StackType, StackProblem(..), StackFun)
+-- import W2M.Stack qualified as WStack
+
+-- import Data.Text.Lazy qualified  as T
+-- import Control.Monad.Reader
 
 type WasmAddr = Natural
 type MasmAddr = Word32
 type LocalAddrs = Map WasmAddr (W.ValueType, [MasmAddr])
 type FunName = Text
-type Function = Either W.Import W.Function
+data Function = ImportedFun W.Import | StarkifyFun FunName | DefinedFun W.Function
 
 -- Note: Wasm modules may fail to compile if they contain > 2^29 functions.
 
@@ -66,11 +71,12 @@ toMASM m = do
     <*> return (M.Program (globalsInit ++ datasInit ++ concat methodInits ++ fmap (M.Exec . procName) entryFunctions))
 
   where wasiGlobals :: [Text]
-        wasiGlobals = [ g | (Left (Just method)) <- first wasiImport <$> fmap (allFunctions !) (toList sortedFunctions)
+        wasiGlobals = [ g | Just method <- wasiImport <$> fmap (allFunctions !) (toList sortedFunctions)
                           , g <- WASI.globals method ]
 
-        wasiImport :: W.Import -> Maybe WASI.Method
-        wasiImport (W.Import module' name _) = Map.lookup name =<< Map.lookup module' WASI.library
+        wasiImport :: Function -> Maybe WASI.Method
+        wasiImport (ImportedFun (W.Import module' name _)) = Map.lookup name =<< Map.lookup module' WASI.library
+        wasiImport _ = Nothing
 
 
         wasiGlobalsAddrMap :: Map Text MasmAddr
@@ -98,10 +104,18 @@ toMASM m = do
         translateProc (Right p) = pure p
 
         callGraph :: Map Int (Set Int)
-        callGraph = Map.fromListWith (<>)
+        callGraph = Map.fromListWith (<>) $
           [ (caller, Set.singleton (fromIntegral callee))
-          | (caller, Right (W.Function {body})) <- V.toList $ V.indexed allFunctions
+          | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
           , W.Call callee <- body
+          ] ++
+          [ (starkifyCallIndirectId m, Set.singleton (fromIntegral f))
+          | W.ElemSegment _ _ fs <- W.elems m
+          , f <- fs
+          ] ++
+          [ (f, Set.singleton (starkifyCallIndirectId m))
+          | (f, DefinedFun (W.Function {body})) <- zip [0..] (V.toList allFunctions)
+          , W.CallIndirect _ <- body
           ]
 
         -- Each compiler has a different convention for exporting the main function, and the
@@ -174,27 +188,31 @@ toMASM m = do
         --                                             (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-funcidx)
         allFunctions :: Vector Function
         allFunctions = V.fromList $
-          [ Left f | f@(W.Import _ _ (W.ImportFunc _)) <- W.imports m ] <>
-          [ Right f | f <- W.functions m ]
+          [ ImportedFun f | f@(W.Import _ _ (W.ImportFunc _)) <- W.imports m ] <>
+          [ DefinedFun f | f <- W.functions m ] <>
+          primitiveFuns
 
         types :: Vector W.FuncType
         types = V.fromList $ W.types m
 
         emptyFunctions :: Set Int
         emptyFunctions = Set.fromList $ V.toList $ V.findIndices emptyF allFunctions
-         where emptyF (Right (W.Function _ _ [])) = True
+         where emptyF (DefinedFun (W.Function _ _ [])) = True
                emptyF _ = False
 
         functionType :: Function -> W.FuncType
         -- Function indices are checked by the wasm library and will always be in range.
-        functionType (Left (W.Import _ _ (W.ImportFunc idx))) = types ! fromIntegral idx
-        functionType (Right (W.Function {funcType})) = types ! fromIntegral funcType
+        functionType (ImportedFun (W.Import _ _ (W.ImportFunc idx))) = types ! fromIntegral idx
+        functionType (DefinedFun (W.Function {funcType})) = types ! fromIntegral funcType
+        functionType _ = error "function type of primitive starkify function?"
 
         -- TODO: Uniquify names if necessary (import/export conflicts or exported names like "f1").
         procName :: Int -> M.ProcName
-        procName i = T.take 100 $ fixName $ procName'
+        procName i
+          | i >= length (W.functions m) = starkifyCallIndirectName
+          | otherwise     = T.take 100 $ fixName $ procName'
           where procName' = case allFunctions ! i of
-                              Left (W.Import m n _) -> m <> "__" <> n
+                              ImportedFun (W.Import mo n _) -> mo <> "__" <> n
                               _ -> case exportedName (fromIntegral i) of
                                      Just n -> n
                                      Nothing -> "f" <> T.pack (show i)
@@ -223,6 +241,7 @@ toMASM m = do
                         ]
           where typeStackSize W.I32 = 1
                 typeStackSize W.I64 = 2
+                typeStackSize t = error $ "typeStackSize: unsupported floating type " ++ show t
 
         continue :: [M.Instruction] -> [M.Instruction]
         continue is =
@@ -267,12 +286,22 @@ toMASM m = do
                 f n' (InBlock _ _ s:ctxs) = if n' == 1 then s else s <> f (n'-1) ctxs
                 f _ (InFunction _:_) = []
                 f n' (_:ctxs) = f n' ctxs
+                f _ [] = []
 
         fun2MASM :: Int -> Function -> V (Maybe (Either WASI.Method M.Proc))
-        fun2MASM _   (Left i) = inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport i)
-        fun2MASM _   (Right (W.Function _ _         [])) = return Nothing
+        fun2MASM _   f@(ImportedFun i) = inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
+        fun2MASM idx (StarkifyFun nm)
+          | idx == starkifyCallIndirectId m &&
+            nm == starkifyCallIndirectName = Just . Right <$> mkStarkifyCallIndirect (procName . fromIntegral) m
+          | otherwise = badStarkifyFun idx nm
+        fun2MASM _   (DefinedFun (W.Function _ _         [])) = return Nothing
+--      fun2MASM (funid, Just name, Nothing)
+--        | funid == fromIntegral (maxBound :: Int) &&
+--          name == "starkify_call_indirect" = Just <$> mkStarkifyCallIndirect getFunName m
+--        | otherwise                        = return Nothing
+
         -- TODO: Add back function name to context.
-        fun2MASM idx (Right (W.Function typ localsTys body)) = inContext (InFunction idx) $ do
+        fun2MASM idx (DefinedFun (W.Function typ localsTys body)) = inContext (InFunction idx) $ do
           let wasm_args = W.params (types ! fromIntegral typ)
               wasm_locals = localsTys
 
@@ -635,7 +664,7 @@ toMASM m = do
           -- setting free the relevant bits in v:
           -- v'  = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
           -- and storing v' | i'
-            typed [W.I32, W.I64] []               -- [i_hi, i_lo, byte_addr, ...]
+            typed [W.I64, W.I32] []               -- [i_hi, i_lo, byte_addr, ...]
                    [ M.Swap 1 , M.Swap 2          -- [byte_addr, i_hi, i_lo, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i_hi, i_lo, ...]
                    , M.IAdd                       -- [byte_addr+offset, i_hi, i_lo, ...]
@@ -708,6 +737,12 @@ toMASM m = do
             W.I64 -> return [M.Drop, M.Drop]
 
         translateInstr _ W.Unreachable = pure [M.Push 0, M.Assert]
+
+        translateInstr _ (W.CallIndirect tyIdx) = case W.types m !! fromIntegral tyIdx of
+          W.FuncType paramsTys retTys -> do
+            params <- checkTypes paramsTys
+            ret    <- checkTypes retTys
+            typed params ret [M.Exec starkifyCallIndirectName]
 
         translateInstr _ i = unsupportedInstruction i
 
@@ -868,3 +903,67 @@ writeW32s (a:b:c:d:xs) =
       , M.Push 1, M.IAdd -- [addr_u32+1, ...]
       ] ++ writeW32s xs
 writeW32s xs = writeW32s $ xs ++ replicate (4-length xs) 0
+
+-- TODO: define one procedure per type of function, this way we'd minimize the cost of
+--       all indirect calls by having dedicated binary searches on smaller trees?
+mkStarkifyCallIndirect :: (W.FuncIndex -> T.Text) -> W.Module -> V M.Proc
+mkStarkifyCallIndirect funName m = inContext CallIndirectFun $ do
+  instrs <- genInstrs elems
+  return (M.Proc 1 instrs)
+
+  where elems = W.elems m
+        segmentFuns segment@(W.ElemSegment tableIdx offsetExpr funIds)
+          | tableIdx /= 0 = badNoMultipleTable
+          | otherwise = case offsetExpr of
+              [W.I32Const offset] -> return $ zip [offset..] funIds
+              _                   -> unsupportedElemDynOffset segment
+        genInstrs segments = do
+          funs <- sortOn fst . concat <$> traverse segmentFuns segments
+          guardAllConsecutive funs
+          return (binarySearchInstrs funName funs)
+
+        guardAllConsecutive ((i, fi):(j, fj):xs)
+          | j == i+1  = guardAllConsecutive ((j, fj):xs)
+          | otherwise = badFunsNotConsecutive i fi j fj
+        guardAllConsecutive _ = return ()
+
+binarySearchInstrs :: (W.FuncIndex -> T.Text) -> [(Word32, W.FuncIndex)] -> [M.Instruction]
+binarySearchInstrs funName fs = go fs
+  where go [] = []
+        go [(_i, fi)] = [ M.Drop, M.Exec (funName fi) ]
+        go funs =
+          let midpoint = length funs `div` 2
+              midfun@(mid, fmid) = funs !! midpoint in
+                          -- [fun_off, ...args...]
+          [ M.Push mid    -- [mid, fun_off, ...args...]
+          , M.Dup 1       -- [fun_off, mid, fun_off, ...args...]
+          , M.IEq Nothing -- [fun_off == mid, fun_off, ...args...]
+          , M.If          -- [fun_off, ...args...]
+              [ M.Drop    -- [...args...]
+              , M.Exec (funName fmid)
+              ]
+              (if length funs > 2
+                then [ M.Dup 0    -- [fun_off, fun_off, ...args...]
+                     , M.Push mid -- [mid, fun_off, fun_off, ...args...]
+                     , M.ILt      -- [fun_off < mid, fun_off, ...args...]
+                     , M.If       -- [fun_off, ...args...]
+                         (go (take midpoint funs))
+                         (go (drop (midpoint+1) funs))
+                     ]
+                else go (filter (/=midfun) funs)
+              )
+          ]
+
+-- Primitive functions
+
+-- | The special name reserved for the 'starkify_call_indirect' procedure
+starkifyCallIndirectName :: Text
+starkifyCallIndirectName = "starkify_call_indirect"
+
+-- | We simulate that the function is part of the WASM module, with index
+--   @largest function index in the module + 1@.
+starkifyCallIndirectId :: Integral a => W.Module -> a
+starkifyCallIndirectId m = fromIntegral $ length (W.functions m)
+
+primitiveFuns :: [Function]
+primitiveFuns = [ StarkifyFun starkifyCallIndirectName ]
