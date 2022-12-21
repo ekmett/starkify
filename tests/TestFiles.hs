@@ -79,7 +79,7 @@ compareWasmMasmResult expectedOutFile wmod = do
   mmod <- runValidation (toMASM wmod)
   mmasmres <- runMiden mmod
   case (mwasmres, mmasmres) of
-    (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks vals stack (0 :: Integer)
+    (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks (reverse vals) stack 0
     _ -> error ("unexpected results: " ++ show (mwasmres, mmasmres))
 
   where compareStacks [] masmstack _k = filter (/=0) masmstack `shouldBe` []

@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE LambdaCase #-}
@@ -9,6 +8,7 @@ module W2M where
 import Data.Bifunctor (first, second)
 import Control.Applicative
 import Control.Monad.Except
+import Control.Monad.Reader
 import Control.Monad.State
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
@@ -22,7 +22,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
 import Data.Text.Lazy qualified as T
-import Data.Vector (Vector, (!), (!?))
+import Data.Vector (Vector, (!))
 import Data.Vector qualified as V
 import Data.Word (Word8, Word32)
 import GHC.Natural (Natural)
@@ -40,8 +40,6 @@ type LocalAddrs = Map WasmAddr (W.ValueType, [MasmAddr])
 type FunName = Text
 type Function = Either W.Import W.Function
 
-deriving instance Foldable W.Instruction
-
 -- Note: Wasm modules may fail to compile if they contain > 2^29 functions.
 
 toMASM :: W.Module -> V M.Module
@@ -51,7 +49,7 @@ toMASM m = do
   datasInit <- inContext DatasInit getDatasInit
   when (null entryFunctions) $ error "No start function or 'main' function found in WASM module, cannot proceed."
   procs <- catMaybes <$> traverse (\ idx -> fmap (procName idx,) <$> fun2MASM idx (allFunctions ! idx)) (toList sortedFunctions)
-  methodInits <- sequence [ mapM translateGlobals (WASI.init method) | (_, Left method) <- procs ]
+  methodInits <- sequence [ concat <$> traverse translateGlobals (WASI.init method) | (_, Left method) <- procs ]
   let (procNames, procs') = unzip $ fmap (second translateProc) procs
 
   M.Module ["std::sys", "std::math::u64"]
@@ -68,8 +66,10 @@ toMASM m = do
 
         globalsAddrMap :: Vector MasmAddr
         wasiGlobalsAddrMap :: Map Text MasmAddr
+        branchCounter :: MasmAddr
         memBeginning :: MasmAddr
-        (wasiGlobalsAddrMap, memBeginning') = first Map.fromList $ foldl' f ([], 0) wasiGlobals
+        branchCounter = 0
+        (wasiGlobalsAddrMap, memBeginning') = first Map.fromList $ foldl' f ([], 1) wasiGlobals
           where f (xs, n) name = (xs ++ [(name, n)], n+1)
         (globalsAddrMap, memBeginning) = first V.fromList $ foldl' f ([], memBeginning') (W.globals m)
           where f (xs, n) globl_i =
@@ -78,13 +78,13 @@ toMASM m = do
                                  W.Mut   t -> numCells t
                   in (xs ++ [n], n+ncells)
 
-        translateGlobals :: WASI.Instruction -> V M.Instruction
-        translateGlobals (WASI.M i) = pure i
-        translateGlobals (WASI.Load n) = maybe (badNamedGlobalRef n) (pure . M.MemLoad . Just) (Map.lookup n wasiGlobalsAddrMap)
-        translateGlobals (WASI.Store n) = maybe (badNamedGlobalRef n) (pure . M.MemStore . Just) (Map.lookup n wasiGlobalsAddrMap)
+        translateGlobals :: WASI.Instruction -> V [M.Instruction]
+        translateGlobals (WASI.M i) = pure [i]
+        translateGlobals (WASI.Load n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemLoad (Just a)]) (Map.lookup n wasiGlobalsAddrMap)
+        translateGlobals (WASI.Store n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemStore (Just a), M.Drop]) (Map.lookup n wasiGlobalsAddrMap)
 
         translateProc :: Either WASI.Method M.Proc -> V M.Proc
-        translateProc (Left method) = M.Proc (WASI.locals method) <$> mapM translateGlobals (WASI.body method)
+        translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
         translateProc (Right p) = pure p
 
         callGraph :: Map Int (Set Int)
@@ -173,20 +173,89 @@ toMASM m = do
          where emptyF (Right (W.Function _ _ [])) = True
                emptyF _ = False
 
-        functionType :: Function -> Maybe W.FuncType
-        functionType (Left (W.Import _ _ (W.ImportFunc idx))) = types !? fromIntegral idx
-        functionType (Right (W.Function {funcType})) = types !? fromIntegral funcType
-        functionType _ = Nothing
+        functionType :: Function -> W.FuncType
+        -- Function indices are checked by the wasm library and will always be in range.
+        functionType (Left (W.Import _ _ (W.ImportFunc idx))) = types ! fromIntegral idx
+        functionType (Right (W.Function {funcType})) = types ! fromIntegral funcType
 
         procName :: Int -> M.ProcName
         procName i = "f" <> T.pack (show i)
 
+        branch :: Natural -> V [M.Instruction]
+        branch idx = do
+          -- Clean up the stack.
+          stack <- stackFromBlockN idx
+          t <- blockNResultType idx
+          let resultStackSize = sum $ fmap typeStackSize t
+              drop' = case resultStackSize of
+                        0 -> [M.Drop]
+                        1 -> [M.Swap 1, M.Drop]
+                        _ -> [M.MoveUp (fromIntegral resultStackSize), M.Drop]
+          if resultStackSize >= M.accessibleStackDepth
+            then bad $ BlockResultTooLarge resultStackSize
+            else pure $ (concat $ replicate (length stack - resultStackSize) drop') <>
+                        -- Set the branch counter.
+                        [ M.Push (fromIntegral idx + 1)
+                        , M.MemStore (Just branchCounter)
+                        , M.Drop
+                        ]
+          where typeStackSize W.I32 = 1
+                typeStackSize W.I64 = 2
+
+        continue :: [M.Instruction] -> [M.Instruction]
+        continue is =
+          [ M.MemLoad (Just branchCounter)
+          , M.Eq (Just 1)
+          , M.If [ M.Push 0
+                 , M.MemStore (Just branchCounter)
+                 , M.Drop
+                 ] []
+          , M.MemLoad (Just branchCounter)
+          , M.NEq (Just 0)
+          , M.If [ M.MemLoad (Just branchCounter)
+                 , M.Sub (Just 1)
+                 , M.MemStore (Just branchCounter)
+                 , M.Drop
+                 ]
+                 is
+          ]
+
+        blockResultType :: W.BlockType -> W.ResultType
+        blockResultType (W.Inline Nothing) = []
+        blockResultType (W.Inline (Just t')) = [t']
+        blockResultType (W.TypeIndex ti) = W.results $ types ! fromIntegral ti
+
+        blockParamsType :: W.BlockType -> W.ParamsType
+        blockParamsType (W.Inline _) = []
+        blockParamsType (W.TypeIndex ti) = W.params $ types ! fromIntegral ti
+
+        blockNResultType :: Natural -> V W.ResultType
+        blockNResultType = asks . f
+          where f n (InBlock _ t _:ctxs) = if n == 0 then blockResultType t else f (n-1) ctxs
+                f _ (InFunction idx:_) = W.results (functionType (allFunctions ! idx))
+                f n (_:ctxs) = f n ctxs
+
+        stackFromBlockN :: Natural -> V W.ResultType
+        stackFromBlockN n = do
+          stack <- get
+          asks ((stack <>) . f n)
+          where f 0 _ = []
+                f n' (InBlock _ _ s:ctxs) = if n' == 1 then s else s <> f (n'-1) ctxs
+                f _ (InFunction _:_) = []
+                f n' (_:ctxs) = f n' ctxs
+
+        nearestParams :: V W.ParamsType
+        nearestParams = asks f
+          where f (InBlock _ t _:_) = blockParamsType t
+                f (InFunction idx:_) = W.params (functionType (allFunctions ! idx))
+                f (_:ctxs) = f ctxs
+
         fun2MASM :: Int -> Function -> V (Maybe (Either WASI.Method M.Proc))
-        fun2MASM _   (Left i) = inContext ImportsCheck $ maybe (badImport i) (pure . Just . Left) (wasiImport i)
+        fun2MASM _   (Left i) = inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport i)
         fun2MASM _   (Right (W.Function _ _         [])) = return Nothing
         -- TODO: Add back function name to context.
         fun2MASM idx (Right (W.Function typ localsTys body)) = inContext (InFunction idx) $ do
-          let wasm_args = W.params (W.types m !! fromIntegral typ)
+          let wasm_args = W.params (types ! fromIntegral typ)
               wasm_locals = localsTys
 
               localAddrMap :: LocalAddrs
@@ -210,37 +279,77 @@ toMASM m = do
                     _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
                 | k <- [0..(length wasm_args - 1)]
                 ]
-
           instrs <- translateInstrs localAddrMap body
           return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
 
         translateInstrs :: LocalAddrs -> W.Expression -> V [M.Instruction]
         translateInstrs _ [] = pure []
+        translateInstrs a (W.Block t body:is) = do
+          stack <- get
+          body' <- inContext (InBlock Block t stack) (put (blockParamsType t) >> translateInstrs a body)
+          put (blockResultType t <> stack)
+          is' <- continue <$> translateInstrs a is
+          pure $ body' <> is'
+        translateInstrs a (W.Loop t body:is) = do
+          stack <- get
+          body' <- inContext (InBlock Loop t stack) (put (blockParamsType t) >> translateInstrs a body)
+          put (blockResultType t <> stack)
+          is' <- continue <$> translateInstrs a is
+          pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
+          where continueLoop =
+                  [ M.MemLoad (Just branchCounter)
+                  , M.Eq (Just 1)
+                  , M.Dup 0
+                  , M.If [ M.Push 0
+                         , M.MemStore (Just branchCounter)
+                         , M.Drop
+                         ] []
+                  ]
+        translateInstrs a (W.If t tb fb:is) = do
+          stack <- get
+          tb' <- inContext (InBlock If t stack) (put params >> translateInstrs a tb)
+          fb' <- inContext (InBlock If t stack) (put params >> translateInstrs a fb)
+          put (blockResultType t <> stack)
+          is' <- continue <$> translateInstrs a is
+          pure $ case (tb', fb') of
+                   ([], []) -> is'
+                   ([], _) -> [M.Eq (Just 0), M.If fb' tb'] <> is'
+                   (_, _) -> [M.NEq (Just 0), M.If tb' fb'] <> is'
+          where params = blockParamsType t
+        translateInstrs _ (W.Br idx:_) = branch idx
+        translateInstrs a (W.BrIf idx:is) = do
+          is' <- translateInstrs a is
+          br <- branch idx
+          pure [M.NEq (Just 0), M.If br is']
+        -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
+        translateInstrs _ (W.BrTable cases defaultIdx:_) = brTable 0 cases
+          where brTable _ [] = (M.Drop :) <$> branch defaultIdx
+                brTable i (idx:idxs) = do
+                  br <- branch idx
+                  br' <- brTable (i+1) idxs
+                  pure [M.Dup 0, M.Eq (Just i), M.If (M.Drop : br) br']
+        translateInstrs _ (W.Return:_) = branch . fromIntegral =<< blockDepth
         translateInstrs a (i:is) = (<>) <$> translateInstr a i <*> translateInstrs a is
 
         translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
         translateInstr _ (W.Call idx) = let i = fromIntegral idx in
-          case allFunctions !? i of
-            Just f -> do
-              case functionType f of
-                Just (W.FuncType params res) -> do
-                  params' <- checkTypes params
-                  res' <- checkTypes res
-                  let instrs =
-                        if Set.member i emptyFunctions
-                          then concat [ if t == W.I64 then [ M.Drop, M.Drop ] else [ M.Drop ]
-                                      | t <- params'
-                                      ]
-                          else [M.Exec $ procName i]
-                  typed (reverse params') res' instrs
-                Nothing -> badWasmFunctionCallIdx i
-            Nothing -> badWasmFunctionCallIdx i
+          case functionType (allFunctions ! i) of
+            W.FuncType params res -> do
+              params' <- checkTypes params
+              res' <- checkTypes res
+              let instrs =
+                    if Set.member i emptyFunctions
+                      then concat [ if t == W.I64 then [ M.Drop, M.Drop ] else [ M.Drop ]
+                                  | t <- params'
+                                  ]
+                      else [M.Exec $ procName i]
+              typed (reverse params') res' instrs
         translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
         translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
         translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
         translateInstr _ W.Select = typed [W.I32, W.I32, W.I32] [W.I32]
-          [M.If True [M.Drop] [M.Swap 1, M.Drop]]
+          [M.If [M.Drop] [M.Swap 1, M.Drop]]
         translateInstr _ (W.I32Load (W.MemArg offset _align)) = typed [W.I32] [W.I32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                  ( [ M.Push 4
@@ -300,7 +409,7 @@ toMASM m = do
           sigInstrs <- typed [W.I32] [W.I32]         -- [v, ...]
                  ( [ M.Dup 0                         -- [v, v, ...]
                    , M.Push 128, M.IGte              -- [v >= 128, v, ...]
-                   , M.IfTrue                        -- [v, ...]
+                   , M.If                            -- [v, ...]
                        [ M.Push 255, M.Swap 1        -- [v, 255, ...]
                        , M.ISub, M.Push 1, M.IAdd    -- [255 - v + 1, ...]
                        , M.Push 4294967295           -- [4294967295, 255 - v + 1, ...]
@@ -575,7 +684,7 @@ toMASM m = do
             , M.IAnd                   -- [x & 2^31, x, ...]
             , M.Push 31, M.IShR        -- [x_highest_bit, x, ...]
             -- TODO: Use select
-            , M.IfTrue
+            , M.If
                 [ M.Push 4294967295    -- [0b11..1, x, ...]
                 ]
                 [ M.Push 0             -- [0, x, ...]
@@ -632,7 +741,7 @@ translateIBinOp W.BS32 op = case op of
       [ M.Swap 1                   -- [b, a_negative, abs(a)/abs(b), ...]
       ] ++ computeIsNegative ++    -- [b_negative, a_negative, abs(a)/abs(b), ...]
       [ M.IXor                     -- [a_b_diff_sign, abs(a)/abs(b), ...]
-      , M.IfTrue                   -- [abs(a)/abs(b), ...]
+      , M.If                       -- [abs(a)/abs(b), ...]
           computeNegate            -- [-abs(a)/abs(b), ...]
           []                       -- [abs(a)/abs(b), ...]
       ]
@@ -640,7 +749,7 @@ translateIBinOp W.BS32 op = case op of
   W.IShrS -> typed [W.I32, W.I32] [W.I32] -- [b, a, ...]
     ( [ M.Dup 1                  -- [a, b, a, ...]
       ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
-      [ M.IfTrue                 -- [b, a, ...]
+      [ M.If                     -- [b, a, ...]
           [ M.Swap 1, M.INot     -- [~a, b, ...]
           , M.Swap 1             -- [b, ~a, ...]
           , M.IShR               -- [~a >> b, ...]
@@ -648,7 +757,6 @@ translateIBinOp W.BS32 op = case op of
           ]
           [ M.IShR ]            -- [ a >> b, ...]
       ]
-    , SI32 : t
     )
   _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
 
@@ -682,7 +790,7 @@ translateIRelOp W.BS32 op = case op of
   W.IGeS -> typed [W.I32, W.I32] [W.I32]              -- [b, a, ...]
     ( [ M.Dup 0, M.Dup 2                              -- [b, a, b, a, ...]
       , M.IEq Nothing                                 -- [a == b, b, a, ...]
-      , M.IfTrue                                      -- [b, a, ...]
+      , M.If                                          -- [b, a, ...]
           [ M.Drop, M.Drop, M.Push 1 ]                -- [1, ...]
           ([ M.Swap 1, M.ISub ] ++ computeIsNegative) -- [a > b, ...]
       ]
@@ -707,7 +815,7 @@ computeAbs :: [M.Instruction]
 computeAbs =           -- [x, ...]
   [ M.Dup 0 ] ++       -- [x, x, ...]
   computeIsNegative ++ -- [x_highest_bit, x, ...]
-  [ M.IfTrue           -- [x, ...]
+  [ M.If               -- [x, ...]
       computeNegate    -- [-x, ...]
       []               -- [x, ...]
   ]
@@ -733,17 +841,13 @@ computeIsNegative = -- [x, ...]
   where hi = 2^(31::Int)
 
 typed :: W.ParamsType -> W.ResultType -> a -> V a
-typed prefix resultType x = maybe (bad $ ExpectedStack prefix) f' . stripPrefix prefix =<< get
-  where f' stack = do
-          put (resultType <> stack)
-          pure x
+typed params result x = maybe (bad $ ExpectedStack params) f . stripPrefix params =<< get
+  where f stack = put (result <> stack) >> pure x
 
 withPrefix :: (W.ValueType -> V a) -> V a
-withPrefix f = do
-  stack <- get
-  case stack of
-    [] -> bad EmptyStack
-    x:xs -> put xs >> f x
+withPrefix f = get >>= \ case
+  [] -> bad EmptyStack
+  x:xs -> put xs >> f x
 
 writeW32s :: [Word8] -> [M.Instruction]
 writeW32s [] = []

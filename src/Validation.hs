@@ -29,30 +29,31 @@ bad e = do
   stack <- get
   refute [Error ctxs stack e]
 
+data Block = Block | Loop | If deriving Show
+
 data Ctx =
     InFunction Int -- func id
   | GlobalsInit
   | DatasInit
-  | ImportsCheck
+  | Import
   | Typechecker
   | InInstruction Int (W.Instruction Natural) -- func id, instruction #
-  | InBlock W.BlockType
-  | InLoop W.BlockType
-  | InIf W.BlockType
+  | InBlock Block W.BlockType W.ResultType -- block kind, block type, parent block stack on block entry (the whole stack, not just the usable stack)
   deriving Show
 
 inContext :: Ctx -> Validation e a -> Validation e a
 inContext c = local (c:)
 
-withContexts :: [Ctx] -> Validation e a -> Validation e a
-withContexts cs = local (const cs)
+blockDepth :: Validation e Int
+blockDepth = length . filter isBlock <$> ask
+  where isBlock (InBlock {}) = True
+        isBlock _ = False
 
 data ErrorData
   = FPOperation String
   | GlobalMut W.ValueType
   | NoMain
   | StdValidation W.ValidationError
-  | WasmFunctionCallIdx Int
   | UnsupportedInstruction (W.Instruction Natural)
   | Unsupported64Bits String
   | UnsupportedMemAlign Natural (W.Instruction Natural)
@@ -62,6 +63,7 @@ data ErrorData
   | UnsupportedArgType W.ValueType
   | EmptyStack
   | NamedGlobalRef LT.Text
+  | BlockResultTooLarge Int
   deriving Show
 
 data Error e = Error
@@ -76,7 +78,6 @@ errIdx e = case e of
   GlobalMut _ -> 1
   NoMain -> 2
   StdValidation _ -> 3
-  WasmFunctionCallIdx _ -> 4
   UnsupportedInstruction _ -> 5
   Unsupported64Bits _ -> 6
   UnsupportedMemAlign _ _ -> 7
@@ -86,6 +87,7 @@ errIdx e = case e of
   EmptyStack -> 11
   UnsupportedArgType _ -> 12
   NamedGlobalRef _ -> 13
+  BlockResultTooLarge _ -> 14
 
 badFPOp :: String -> V a
 badFPOp s = bad (FPOperation s)
@@ -115,9 +117,6 @@ descType idesc = case idesc of
 failsStandardValidation :: W.ValidationError -> V a
 failsStandardValidation e = bad (StdValidation e)
 
-badWasmFunctionCallIdx :: Int -> V a
-badWasmFunctionCallIdx i = bad (WasmFunctionCallIdx i)
-
 unsupportedInstruction :: W.Instruction Natural -> V a
 unsupportedInstruction i = bad (UnsupportedInstruction i)
 
@@ -141,7 +140,6 @@ ppErrData (GlobalMut t) = "unsupported global mutable variable of type: " ++
   )
 ppErrData NoMain = "missing main function"
 ppErrData (StdValidation e) = "standard validator issue: " ++ show e
-ppErrData (WasmFunctionCallIdx i) = "invalid index in function call: " ++ show i
 ppErrData (UnsupportedInstruction _i) = "unsupported WASM instruction"
 ppErrData (Unsupported64Bits opstr) = "unsupported 64 bit operation (" ++ opstr ++ ")"
 ppErrData (UnsupportedMemAlign a _instr) = "unsupported alignment: " ++ show a
@@ -157,6 +155,8 @@ ppErrData (UnsupportedArgType t) =
   "unsupported argument type: " ++ show t
 ppErrData (NamedGlobalRef n) =
   "undefined global variable: " ++ show n
+ppErrData (BlockResultTooLarge s) =
+  "function result too large: " ++ show s
 
 ppErr :: Error ErrorData -> [String]
 ppErr e =
@@ -172,12 +172,10 @@ ppErrCtx :: Ctx -> String
 ppErrCtx (InFunction i) = "of function " ++ show i
 ppErrCtx DatasInit = "in data section"
 ppErrCtx GlobalsInit = "in globals initialisation"
-ppErrCtx ImportsCheck = "in imports"
+ppErrCtx Import = "in import"
 ppErrCtx Typechecker = "in typechecking"
 ppErrCtx (InInstruction k i) = "in instruction #" ++ show k ++ ": " ++ take 100 (show i) ++ "  ..."
-ppErrCtx (InBlock _) = "of block"
-ppErrCtx (InLoop _) = "of loop"
-ppErrCtx (InIf _) = "of if"
+ppErrCtx (InBlock t _ _) = "of " <> show t
 
 type V = Validation (DList.DList (Error ErrorData))
 

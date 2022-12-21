@@ -44,28 +44,29 @@ newtype Program = Program { programInstrs :: [Instruction] }
 -- TODO(Matthias): perhaps annotate stack effect?
 data Instruction
   = Exec ProcName -- exec.foo
-  | IfTrue { -- if.true
+  | If { -- if.true
     thenBranch :: [Instruction],
     elseBranch :: [Instruction] }
-  | WhileTrue { -- while.true
-    body :: [Instruction]
-  }
+  | While [Instruction] -- while.true
 
   | AdvPush Word32 -- adv_push.n
   | Push Word32   -- push.n
   | Swap Word32 -- swap[.i]
   | Drop -- drop
   | Dup Word32 -- dup.n
-  | MoveUp Word32 -- moveup.n
+  | MoveUp Word32 -- movup.n
   | TruncateStack -- exec.sys::truncate_stack
-  | SDepth -- push.env.sdepth
+  | SDepth -- sdepth
+  | Eq (Maybe Word32) -- eq[.n]
+  | NEq (Maybe Word32) -- neq[.n]
+  | Not -- not
 
   | LocStore Word32  -- loc_store.i
   | LocLoad Word32 -- loc_load.i
   | MemLoad (Maybe Word32) -- mem_load[.i]
   | MemStore (Maybe Word32) -- mem_store[.i]
-  -- | MemLoadStack -- mem_load
-  -- | MemStoreStack -- mem_store
+  | Add (Maybe Word32) -- add[.n]
+  | Sub (Maybe Word32) -- sub[.n]
 
   | IAdd -- u32checked_add
   | ISub -- "u32checked_sub"
@@ -102,6 +103,8 @@ instance (a~()) => GHC.Exts.IsList (PpMASM a) where
   fromList = tell . DList.fromList
   toList = DList.toList . snd . runWriter . runPpMASM
 
+accessibleStackDepth :: Int
+accessibleStackDepth = 16
 
 indent :: PpMASM a -> PpMASM a
 indent = censor (fmap ("  "++))
@@ -122,15 +125,15 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
           "end"
         ppInstr :: Instruction -> PpMASM ()
         ppInstr (Exec pname) = [ "exec." ++ unpack pname ]
-        ppInstr (IfTrue {thenBranch, elseBranch}) = do
-          ["if.true"]
+        ppInstr (If {thenBranch, elseBranch}) = do
+          "if.true"
           indent $ traverse_ ppInstr thenBranch
           unless (null elseBranch) $ do
             "else"
             indent $ traverse_ ppInstr elseBranch
           "end"
-        ppInstr (WhileTrue {body}) = do
-          ["while.true"]
+        ppInstr (While body) = do
+          "while.true"
           indent $ traverse_ ppInstr body
           "end"
 
@@ -144,7 +147,17 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr (Dup n) = [ "dup." ++ show n ]
         ppInstr (MoveUp n) = [ "movup." ++ show n ]
         ppInstr TruncateStack = "exec.sys::truncate_stack"
-        ppInstr SDepth = "push.env.sdepth"
+        ppInstr SDepth = "sdepth"
+        ppInstr (Eq Nothing) = "eq"
+        ppInstr (Eq (Just n)) = [ "eq." ++ show n ]
+        ppInstr (NEq Nothing) = "neq"
+        ppInstr (NEq (Just n)) = [ "neq." ++ show n ]
+        ppInstr Not = "not"
+
+        ppInstr (Add Nothing) = "sub"
+        ppInstr (Add (Just n)) = [ "add." ++ show n ]
+        ppInstr (Sub Nothing) = "sub"
+        ppInstr (Sub (Just n)) = [ "sub." ++ show n ]
 
         ppInstr IAdd = "u32wrapping_add"
         ppInstr ISub = "u32wrapping_sub"
