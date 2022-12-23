@@ -9,7 +9,7 @@ import Data.Word ( Word32, Word64 )
 import GHC.Natural ( Natural )
 import System.IO ( hSetBuffering, stdout, BufferMode(LineBuffering) )
 import Test.Hspec ( hspec, describe )
-import Test.Hspec.QuickCheck ( prop, modifyMaxSuccess )
+import Test.Hspec.QuickCheck ( prop )
 import Test.QuickCheck
     ( Gen,
       Property,
@@ -204,14 +204,13 @@ newtype Pow = Pow Int
 instance Arbitrary Pow where
   arbitrary = Pow <$> chooseInt (1, 31)
 
-numTestCases :: Int
-numTestCases = 10000
-
+-- To run more examples, use something like
+-- cabal test --test-option=--qc-max-success=10000 arith-test
 main :: IO ()
 main = do
   hSetBuffering stdout LineBuffering
   hspec $
-    describe "starkify preserves arithmetic computations results" $ modifyMaxSuccess (const numTestCases) $ do
+    describe "starkify preserves arithmetic computations results" $ do
       prop "for unsigned 32 bits integers" $
         exprEvalCompile @Word32
       prop "for signed 32 bits integers" $
