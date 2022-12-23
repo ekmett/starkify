@@ -71,19 +71,21 @@ toMASM m = do
         wasiImport :: W.Import -> Maybe WASI.Method
         wasiImport (W.Import module' name _) = Map.lookup name =<< Map.lookup module' WASI.library
 
-        globalsAddrMap :: Vector MasmAddr
-        wasiGlobalsAddrMap :: Map Text MasmAddr
 
-        memBeginning :: MasmAddr
+        wasiGlobalsAddrMap :: Map Text MasmAddr
         wasiGlobalsAddrMap = Map.fromList (zip wasiGlobals [firstNonReservedAddress..])
         memBeginning' = maximum (firstNonReservedAddress : Map.elems wasiGlobalsAddrMap)
 
-        (globalsAddrMap, memBeginning) = first V.fromList $ foldl' f ([], memBeginning') (W.globals m)
-          where f (xs, n) globl_i =
-                  let ncells = case W.globalType globl_i of
-                                 W.Const t -> numCells t
-                                 W.Mut   t -> numCells t
-                  in (xs ++ [n], n+ncells)
+        ncells globl_i = case W.globalType globl_i of
+            W.Const t -> numCells t
+            W.Mut   t -> numCells t
+
+        globalsAddrMap' = scanl (+) memBeginning' $ fmap ncells (W.globals m)
+
+        globalsAddrMap :: Vector MasmAddr
+        globalsAddrMap = V.fromList (init globalsAddrMap')
+        memBeginning :: MasmAddr
+        memBeginning = last globalsAddrMap'
 
         translateGlobals :: WASI.Instruction -> V [M.Instruction]
         translateGlobals (WASI.M i) = pure [i]
