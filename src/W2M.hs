@@ -246,12 +246,6 @@ toMASM m = do
                 f _ (InFunction _:_) = []
                 f n' (_:ctxs) = f n' ctxs
 
-        nearestParams :: V W.ParamsType
-        nearestParams = asks f
-          where f (InBlock _ t _:_) = blockParamsType t
-                f (InFunction idx:_) = W.params (functionType (allFunctions ! idx))
-                f (_:ctxs) = f ctxs
-
         fun2MASM :: Int -> Function -> V (Maybe (Either WASI.Method M.Proc))
         fun2MASM _   (Left i) = inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport i)
         fun2MASM _   (Right (W.Function _ _         [])) = return Nothing
