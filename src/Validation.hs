@@ -18,7 +18,6 @@ import Language.Wasm.Structure qualified as W
 import Language.Wasm.Validate qualified  as W
 
 import Data.Text.Lazy qualified as LT
-import qualified Language.Wasm.Builder as W
 
 newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
