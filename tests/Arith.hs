@@ -95,7 +95,7 @@ toWasm expr = W.Module
           I32 -> W.I32
           W64 -> W.I64
           I64 -> W.I64
-    
+
         exprWasm :: Typed t => Expr t -> [W.Instruction Natural]
         exprWasm e = case e of
             ConstU32 w -> [W.I32Const w]

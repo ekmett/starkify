@@ -733,7 +733,7 @@ translateIBinOp W.BS32 op = case op of
   W.IDivU -> stackBinop W.I32 M.IDiv
 
   -- https://bisqwit.iki.fi/story/howto/bitmath/#DviIdivDiviSignedDivision
-  W.IDivS -> 
+  W.IDivS ->
     typed [W.I32, W.I32] [W.I32]   -- [b, a, ...]
     ( [ M.Dup 1 ] ++ computeAbs ++ -- [abs(a), b, a, ...]
       [ M.Dup 1 ] ++ computeAbs ++ -- [abs(b), abs(a), b, a, ...]

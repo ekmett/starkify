@@ -3,7 +3,7 @@
   (func (;0;) (type 0) (result i32)
     i32.const -1
     i32.const 1
-    i32.lt_s ;; 1, because -1 < 1 
+    i32.lt_s ;; 1, because -1 < 1
 
     i32.const -1
     i32.gt_s ;; 1, because 1 > -1
