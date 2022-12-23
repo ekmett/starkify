@@ -53,6 +53,7 @@ data Instruction
   | Push Word32   -- push.n
   | Swap Word32 -- swap[.i]
   | Drop -- drop
+  | CDrop -- cdrop
   | Dup Word32 -- dup.n
   | MoveUp Word32 -- movup.n
   | TruncateStack -- exec.sys::truncate_stack
@@ -144,6 +145,7 @@ ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
         ppInstr (Push n) = [ "push." ++ show n ]
         ppInstr (Swap n) = [ "swap" ++ if n == 1 then "" else "." ++ show n ]
         ppInstr Drop = "drop"
+        ppInstr CDrop = "cdrop"
         ppInstr (Dup n) = [ "dup." ++ show n ]
         ppInstr (MoveUp n) = [ "movup." ++ show n ]
         ppInstr TruncateStack = "exec.sys::truncate_stack"

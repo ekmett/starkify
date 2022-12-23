@@ -351,7 +351,7 @@ toMASM m = do
         translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
         translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
         translateInstr _ W.Select = typed [W.I32, W.I32, W.I32] [W.I32]
-          [M.If [M.Drop] [M.Swap 1, M.Drop]]
+          [M.CDrop]
         translateInstr _ (W.I32Load (W.MemArg offset _align)) = typed [W.I32] [W.I32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                  ( [ M.Push 4
