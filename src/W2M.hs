@@ -193,7 +193,7 @@ toMASM m = do
                         _ -> [M.MoveUp (fromIntegral resultStackSize), M.Drop]
           if resultStackSize >= M.accessibleStackDepth
             then bad $ BlockResultTooLarge resultStackSize
-            else pure $ (concat $ replicate (length stack - resultStackSize) drop') <>
+            else pure $ concat (replicate (length stack - resultStackSize) drop') <>
                         -- Set the branch counter.
                         [ M.Push (fromIntegral idx + 1)
                         , M.MemStore (Just branchCounter)
@@ -354,7 +354,7 @@ toMASM m = do
           [M.CDrop]
         translateInstr _ (W.I32Load (W.MemArg offset _align)) = typed [W.I32] [W.I32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
-                 ( [ M.Push 4
+                   [ M.Push 4
                    , M.IDiv
                    , M.Push (fromIntegral offset `div` 4)
                    , M.IAdd
@@ -362,12 +362,11 @@ toMASM m = do
                    , M.IAdd
                    , M.MemLoad Nothing
                    ]
-                 )
         translateInstr _ (W.I32Store (W.MemArg offset _align)) =
           -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
             typed [W.I32, W.I32] []
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
-                 ( [ M.Swap 1
+                   [ M.Swap 1
                    , M.Push 4
                    , M.IDiv
                    , M.Push (fromIntegral offset `div` 4)
@@ -377,10 +376,9 @@ toMASM m = do
                    , M.MemStore Nothing
                    , M.Drop
                    ]
-                 )
         translateInstr _ (W.I32Load8U (W.MemArg offset _align)) =
             typed [W.I32] [W.I32]
-                 ( [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
+                   [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd                       -- [byte_addr+offset, ...]
                    , M.IDivMod (Just 4)           -- [r, q, ...]
                                                   -- where byte_addr+offset = 4*q + r
@@ -405,11 +403,10 @@ toMASM m = do
                    , M.IAnd               -- [and, 8*r, ...]
                    , M.Swap 1, M.IShR     -- [res, ...]
                    ]
-                 )
         translateInstr a (W.I32Load8S mem) = do
           loadInstrs <- translateInstr a (W.I32Load8U mem)
           sigInstrs <- typed [W.I32] [W.I32]         -- [v, ...]
-                 ( [ M.Dup 0                         -- [v, v, ...]
+                   [ M.Dup 0                         -- [v, v, ...]
                    , M.Push 128, M.IGte              -- [v >= 128, v, ...]
                    , M.If                            -- [v, ...]
                        [ M.Push 255, M.Swap 1        -- [v, 255, ...]
@@ -420,7 +417,6 @@ toMASM m = do
                        ]
                        [] -- if the 32 bits of v encode a positive 8 bits number, nothing to do
                    ]
-                 )
           pure $ loadInstrs <> sigInstrs
         translateInstr _ (W.I32Store8 (W.MemArg offset _align)) =
           -- we have an 8-bit value stored in an i32, e.g (lowest on the left):
@@ -436,7 +432,7 @@ toMASM m = do
           -- v'  = xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
           -- and storing v' | i'
             typed [W.I32, W.I32] []
-                 ( [ M.Swap 1                     -- [byte_addr, i, ...]
+                   [ M.Swap 1                     -- [byte_addr, i, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
                    , M.IAdd                       -- [byte_addr+offset, i, ...]
                    , M.IDivMod (Just 4)           -- [r, q, i, ...]
@@ -461,9 +457,8 @@ toMASM m = do
                    , M.MemStore Nothing           -- [final_val, ...]
                    , M.Drop                       -- [...]
                    ]
-                 )
         translateInstr _ (W.I32Load16U (W.MemArg offset _align)) = typed [W.I32] [W.I32]
-                 ( [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
+                   [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd                       -- [byte_addr+offset, ...]
                    , M.IDivMod (Just 4)           -- [r, q, ...]
                                                   -- where byte_addr+offset = 4*q + r
@@ -488,11 +483,10 @@ toMASM m = do
                    , M.IAnd                 -- [and, 8*r, ...]
                    , M.Swap 1, M.IShR       -- [res, ...]
                    ]
-                 )
         translateInstr _ (W.I32Store16 (W.MemArg offset _align))
           | mod offset 4 == 3 = error "offset = 3!"
           | otherwise = typed [W.I32, W.I32] []
-                 ( [ M.Swap 1                     -- [byte_addr, i, ...]
+                   [ M.Swap 1                     -- [byte_addr, i, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
                    , M.IAdd                       -- [byte_addr+offset, i, ...]
                    , M.IDivMod (Just 4)           -- [r, q, i, ...]
@@ -517,7 +511,6 @@ toMASM m = do
                    , M.MemStore Nothing           -- [final_val, ...]
                    , M.Drop                       -- [...]
                    ]
-                 )
         -- locals
         translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
           Just (loct, is) -> typed [] [loct] (map M.LocLoad is)
@@ -540,35 +533,31 @@ toMASM m = do
         -- globals
         translateInstr _ (W.GetGlobal k) = case getGlobalTy k of
           W.I32 -> typed [] [W.I32]
-            ( [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
-              ]
-            )
+              [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k]
           W.I64 -> typed [] [W.I64]
-            ( [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
+              [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
               , M.MemLoad . Just $ (globalsAddrMap V.! fromIntegral k) + 1
               ]
-            )
+          t -> error $ "unsupported type: " ++ show t
         translateInstr _ (W.SetGlobal k) = case getGlobalTy k of
           W.I32 -> typed [W.I32] []
-            ( [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k
+              [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k
               , M.Drop
               ]
-            )
           W.I64 -> typed [W.I64] []
-            ( [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
+              [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
               , M.Drop
               , M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k)
               , M.Drop
               ]
-            )
+          t -> error $ "unsupported type: " ++ show t
 
         -- https://maticnetwork.github.io/miden/user_docs/stdlib/math/u64.html
         -- 64 bits integers are emulated by separating the high and low 32 bits.
         translateInstr _ (W.I64Const k) = typed [] [W.I64]
-          ( [ M.Push k_lo
+            [ M.Push k_lo
             , M.Push k_hi
             ]
-          )
           where FakeW64 k_hi k_lo = toFakeW64 k
         translateInstr _ (W.I64Load (W.MemArg offset _align))
           | mod offset 4 /= 0 = error "i64 load"
@@ -580,7 +569,7 @@ toMASM m = do
           --
           -- u32_addr = (byte_addr / 4) + (offset / 4) + memBeginning
           typed [W.I32] [W.I64]
-            ( [ M.Push 4, M.IDiv
+              [ M.Push 4, M.IDiv
               , M.Push (fromIntegral offset `div` 4)
               , M.IAdd
               , M.Push memBeginning, M.IAdd -- [addr, ...]
@@ -590,7 +579,6 @@ toMASM m = do
               , M.Push 1, M.IAdd -- [addr+1, lo, ...]
               , M.MemLoad Nothing -- [hi, lo, ...]
               ]
-            )
         translateInstr _ (W.I64Store (W.MemArg offset _align))
           | mod offset 4 /= 0 = error "i64 store"
           | otherwise   =
@@ -600,7 +588,7 @@ toMASM m = do
           -- (once at u32_addr, once at u32_addr+1)
           -- to get hi and lo 32 bits of i64 value.
           typed [W.I64, W.I32] []
-            ( [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
+              [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
               , M.Push 4, M.IDiv
               , M.Push (fromIntegral offset `div` 4)
               , M.IAdd
@@ -614,7 +602,6 @@ toMASM m = do
               , M.MemStore Nothing -- [lo, ...]
               , M.Drop -- [...]
               ]
-            )
         translateInstr _ (W.I64Store8 (W.MemArg offset _align)) =
           -- we have an 8-bit value stored in an i64 (two 32 bits in Miden land),
           -- e.g (lowest on the left):
@@ -630,7 +617,7 @@ toMASM m = do
           -- v'  = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
           -- and storing v' | i'
             typed [W.I32, W.I64] []               -- [i_hi, i_lo, byte_addr, ...]
-                 ( [ M.Swap 1 , M.Swap 2          -- [byte_addr, i_hi, i_lo, ...]
+                   [ M.Swap 1 , M.Swap 2          -- [byte_addr, i_hi, i_lo, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i_hi, i_lo, ...]
                    , M.IAdd                       -- [byte_addr+offset, i_hi, i_lo, ...]
                    , M.IDivMod (Just 4)           -- [r, q, i_hi, i_lo, ...]
@@ -665,7 +652,6 @@ toMASM m = do
                    , M.MemStore Nothing, M.Drop   -- [mask_hi, mask_lo, 8*r, ...]
                    , M.Drop, M.Drop, M.Drop       -- [...]
                    ]
-                 )
         -- TODO: ^^^^^^ use M.MoveUp more!
 
 
@@ -681,7 +667,7 @@ toMASM m = do
         -- this is a sign-aware extension, so we push 0 or maxBound :: Word32
         -- depending on whether the most significant bit of the i32 is 0 or 1.
         translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64]
-          ( [ M.Dup 0                  -- [x, x, ...]
+            [ M.Dup 0                  -- [x, x, ...]
             , M.Push 2147483648        -- [2^31, x, x, ...]
             , M.IAnd                   -- [x & 2^31, x, ...]
             , M.Push 31, M.IShR        -- [x_highest_bit, x, ...]
@@ -692,7 +678,6 @@ toMASM m = do
                 [ M.Push 0             -- [0, x, ...]
                 ]
             ]
-          )
 
         translateInstr _ W.I64Eqz = typed [W.I64] [W.I32] [M.IEqz64]
 
@@ -779,8 +764,8 @@ translateIRelOp W.BS32 op = case op of
   W.ILeU -> stackRelop W.I32 M.ILte
   W.IGeU -> stackRelop W.I32 M.IGte
   W.ILtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
-    ( [ M.ISub                                  -- [a-b, ...]
-      ] ++ computeIsNegative                    -- [a-b < 0, ...] =
+    ( M.ISub                                    -- [a-b, ...]
+      : computeIsNegative                       -- [a-b < 0, ...] =
                                                 -- [a<b, ...]
     )
   W.IGtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
@@ -790,13 +775,12 @@ translateIRelOp W.BS32 op = case op of
                                                 -- [b<a, ...]
     )
   W.IGeS -> typed [W.I32, W.I32] [W.I32]              -- [b, a, ...]
-    ( [ M.Dup 0, M.Dup 2                              -- [b, a, b, a, ...]
+      [ M.Dup 0, M.Dup 2                              -- [b, a, b, a, ...]
       , M.IEq Nothing                                 -- [a == b, b, a, ...]
       , M.If                                          -- [b, a, ...]
           [ M.Drop, M.Drop, M.Push 1 ]                -- [1, ...]
           ([ M.Swap 1, M.ISub ] ++ computeIsNegative) -- [a > b, ...]
       ]
-    )
   _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
 
 checkTypes :: [W.ValueType] -> V [W.ValueType]
