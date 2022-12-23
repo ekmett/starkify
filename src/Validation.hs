@@ -7,6 +7,8 @@ import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
 import Data.DList qualified as DList
+import Data.Foldable
+import Data.Function (on)
 import Data.List (sortOn)
 import Data.Typeable
 import GHC.Natural
@@ -15,6 +17,7 @@ import Language.Wasm.Structure qualified as W
 import Language.Wasm.Validate qualified  as W
 
 import Data.Text.Lazy qualified as LT
+import qualified Language.Wasm.Builder as W
 
 newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
@@ -64,30 +67,32 @@ data ErrorData
   | EmptyStack
   | NamedGlobalRef LT.Text
   | BlockResultTooLarge Int
-  deriving Show
+  deriving (Eq, Ord, Show)
+
+deriving instance Ord (W.Instruction Natural)
+deriving instance Ord W.ValueType
+deriving instance Ord W.BlockType
+deriving instance Ord W.MemArg
+deriving instance Ord W.BitSize
+deriving instance Ord W.IUnOp
+deriving instance Ord W.IBinOp
+deriving instance Ord W.IRelOp
+deriving instance Ord W.FUnOp
+deriving instance Ord W.FBinOp
+deriving instance Ord W.FRelOp
+
+-- We need to do this manually, because Arrow ain't exported.
+-- Otherwise, we could do:
+-- deriving instance Ord W.Arrow
+-- deriving instance Ord W.ValidationError
+instance Ord W.ValidationError where
+  compare = compare `on` show
 
 data Error e = Error
   { errCtxs :: [Ctx]
   , errStack :: W.ResultType
   , errData :: e
   } deriving Show
-
-errIdx :: ErrorData -> Int
-errIdx e = case e of
-  FPOperation _ -> 0
-  GlobalMut _ -> 1
-  NoMain -> 2
-  StdValidation _ -> 3
-  UnsupportedInstruction _ -> 5
-  Unsupported64Bits _ -> 6
-  UnsupportedMemAlign _ _ -> 7
-  NoMultipleMem -> 8
-  UnsupportedImport {} -> 9
-  ExpectedStack _ -> 10
-  EmptyStack -> 11
-  UnsupportedArgType _ -> 12
-  NamedGlobalRef _ -> 13
-  BlockResultTooLarge _ -> 14
 
 badFPOp :: String -> V a
 badFPOp s = bad (FPOperation s)
@@ -181,6 +186,6 @@ type V = Validation (DList.DList (Error ErrorData))
 
 runValidation :: V a -> IO a
 runValidation (Validation e) = case runRWS (runValidateT e) [] [] of
-  (Left errs, _i, _w) -> error . unlines . ("":) $
-    concatMap ppErr (sortOn (errIdx . errData) $ DList.toList errs)
+  (Left errs, _i, _w) -> error . unlines . toList .
+    concatMap ppErr . sortOn errData $ toList errs
   (Right a, _i, _w) -> return a
