@@ -185,7 +185,7 @@ toMASM m = do
         branch idx = do
           -- Clean up the stack.
           stack <- stackFromBlockN idx
-          t <- blockNResultType idx
+          t <- blockNBranchType idx
           let resultStackSize = sum $ fmap typeStackSize t
               drop' = case resultStackSize of
                         0 -> [M.Drop]
@@ -229,9 +229,11 @@ toMASM m = do
         blockParamsType (W.Inline _) = []
         blockParamsType (W.TypeIndex ti) = W.params $ types ! fromIntegral ti
 
-        blockNResultType :: Natural -> V W.ResultType
-        blockNResultType = asks . f
-          where f n (InBlock _ t _:ctxs) = if n == 0 then blockResultType t else f (n-1) ctxs
+        blockNBranchType :: Natural -> V W.ResultType
+        blockNBranchType = asks . f
+          where f 0 (InBlock Block t _:_) = blockResultType t
+                f 0 (InBlock Loop t _:_) = blockParamsType t
+                f n (InBlock _ _ _:ctxs) = f (n-1) ctxs
                 f _ (InFunction idx:_) = W.results (functionType (allFunctions ! idx))
                 f n (_:ctxs) = f n ctxs
 
