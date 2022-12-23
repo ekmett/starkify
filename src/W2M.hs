@@ -42,6 +42,13 @@ type Function = Either W.Import W.Function
 
 -- Note: Wasm modules may fail to compile if they contain > 2^29 functions.
 
+-- Reserved masm addresses:
+branchCounter :: MasmAddr
+branchCounter = 0
+
+firstNonReservedAddress :: MasmAddr
+firstNonReservedAddress = branchCounter + 1
+
 toMASM :: W.Module -> V M.Module
 toMASM m = do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
@@ -66,11 +73,11 @@ toMASM m = do
 
         globalsAddrMap :: Vector MasmAddr
         wasiGlobalsAddrMap :: Map Text MasmAddr
-        branchCounter :: MasmAddr
+
         memBeginning :: MasmAddr
-        branchCounter = 0
-        (wasiGlobalsAddrMap, memBeginning') = first Map.fromList $ foldl' f ([], 1) wasiGlobals
-          where f (xs, n) name = (xs ++ [(name, n)], n+1)
+        wasiGlobalsAddrMap = Map.fromList (zip wasiGlobals [firstNonReservedAddress..])
+        memBeginning' = maximum (firstNonReservedAddress : Map.elems wasiGlobalsAddrMap)
+
         (globalsAddrMap, memBeginning) = first V.fromList $ foldl' f ([], memBeginning') (W.globals m)
           where f (xs, n) globl_i =
                   let ncells = case W.globalType globl_i of
