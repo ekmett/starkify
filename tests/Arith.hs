@@ -188,7 +188,7 @@ exprEvalCompile e = ioProperty $ do
   let wmod = toWasm e
   Just reference <- maybe Nothing fromWStack <$> Miden.simulateWASM wmod
   -- putStrLn $ "expr: " ++ show e ++ "  |   result = " ++ show reference
-  mres <- runValidation (toMASM True wmod) >>= Miden.runMiden
+  mres <- runValidation (toMASM wmod) >>= Miden.runMiden
   case mres of
     Left err -> error ("exprEvalCompile got a miden error: " ++ err)
     Right res -> return $ check res reference
