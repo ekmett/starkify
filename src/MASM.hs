@@ -112,18 +112,25 @@ indent = censor (fmap ("  "++))
 
 ppMASM :: Module -> String
 ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
+
+ppModule :: Module -> PpMASM ()
 ppModule m = do
   tell $ DList.fromList $ fmap (("use."++) . unpack) (moduleImports m)
   traverse_ ppProc (moduleProcs m)
   ppProgram (moduleProg m)
+
+ppProc :: (Text, Proc) -> PpMASM ()
 ppProc (name, p) = do
   [ "proc." ++ T.unpack name ++ "." ++ show (procNLocals p) ]
   indent $ traverse_ ppInstr (procInstrs p)
   "end"
+
+ppProgram :: Program -> PpMASM ()
 ppProgram p = do
   "begin"
   indent $ traverse_ ppInstr (programInstrs p)
   "end"
+
 ppInstr :: Instruction -> PpMASM ()
 ppInstr (Exec pname) = [ "exec." ++ unpack pname ]
 ppInstr (If {thenBranch, elseBranch}) = do
