@@ -102,7 +102,6 @@ toMASM m = do
           | (caller, Right (W.Function {body})) <- V.toList $ V.indexed allFunctions
           , W.Call callee <- body
           ]
-        -- enumerate x = x : concatMap enumerate [ y | y <- maybe [] Set.toList (Map.lookup x callGraph) ]
 
         -- Each compiler has a different convention for exporting the main function, and the
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
