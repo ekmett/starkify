@@ -15,4 +15,14 @@ testfiles:
   tags:
     - nixos-starkify-runner
   script:
+    - nix-shell --run "cabal test --test-option=--qc-max-success=10000"
     - nix-shell --run "cabal run testfiles"
+
+additional_arith_test:
+  stage: test
+  tags:
+    - nixos-starkify-runner
+  script:
+    - nix-shell --run "cabal test --test-option=--qc-max-success=20000"
+  only:
+    - master
