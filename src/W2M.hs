@@ -12,6 +12,7 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Data.Bits
 import Data.ByteString.Lazy qualified as BS
+import Data.Char (isAsciiLower)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable
 import Data.List (stripPrefix)
@@ -118,6 +119,9 @@ toMASM m = do
         exportedFunctions :: [(FunName, W.FuncIndex)]
         exportedFunctions = [(name, idx) | (W.Export name (W.ExportFunc idx)) <- W.exports m]
 
+        exportedName :: W.FuncIndex -> Maybe FunName
+        exportedName i = lookup i [(idx, name) | (W.Export name (W.ExportFunc idx)) <- W.exports m]
+
         startFunIdx
           | Just (W.StartFunction k) <- W.start m = Just k
           | otherwise = Nothing
@@ -186,8 +190,18 @@ toMASM m = do
         functionType (Left (W.Import _ _ (W.ImportFunc idx))) = types ! fromIntegral idx
         functionType (Right (W.Function {funcType})) = types ! fromIntegral funcType
 
+        -- TODO: Uniquify names if necessary (import/export conflicts or exported names like "f1").
         procName :: Int -> M.ProcName
-        procName i = "f" <> T.pack (show i)
+        procName i = T.take 100 $ fixName $ procName'
+          where procName' = case allFunctions ! i of
+                              Left (W.Import m n _) -> m <> "__" <> n
+                              _ -> case exportedName (fromIntegral i) of
+                                     Just n -> n
+                                     Nothing -> "f" <> T.pack (show i)
+                fixName "" = "z"
+                fixName n = if isAsciiLower (T.head n)
+                              then n
+                              else fixName "" <> n
 
         branch :: Natural -> V [M.Instruction]
         branch idx = do

@@ -24,7 +24,7 @@ type ModName = Text
 
 data Module = Module
   { moduleImports :: [ModName]
-  , moduleProcs :: [(ProcName, Proc)]
+  , moduleProcs :: [(ProcName, Proc)] -- could be an ordered Map to prevent duplicate names
   , moduleProg  :: Program
   }
   deriving (Eq, Ord, Show, Generic, Typeable)
