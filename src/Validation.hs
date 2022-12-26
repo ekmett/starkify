@@ -145,9 +145,9 @@ ppErrData (GlobalMut t) = "unsupported global mutable variable of type: " ++
   )
 ppErrData NoMain = "missing main function"
 ppErrData (StdValidation e) = "standard validator issue: " ++ show e
-ppErrData (UnsupportedInstruction _i) = "unsupported WASM instruction"
+ppErrData (UnsupportedInstruction i) = "unsupported WASM instruction: " ++ show i
 ppErrData (Unsupported64Bits opstr) = "unsupported 64 bit operation (" ++ opstr ++ ")"
-ppErrData (UnsupportedMemAlign a _instr) = "unsupported alignment: " ++ show a
+ppErrData (UnsupportedMemAlign a instr) = "unsupported alignment: " ++ show a ++ " in " ++ show instr
 ppErrData NoMultipleMem = "multiple memories not supported"
 ppErrData (UnsupportedImport imodule iname idesc) =
   "unsupported import: module=" ++ LT.unpack imodule ++
