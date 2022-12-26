@@ -186,7 +186,7 @@ instance Arbitrary (Expr Int64) where
 exprEvalCompile :: forall t. (Integral t, Bits t, Typed t, Show t) => Expr t -> Property
 exprEvalCompile e = ioProperty $ do
   let wmod = toWasm e
-  Just reference <- maybe Nothing fromWStack <$> Miden.simulateWASM wmod
+  Just reference <- fromWStack <$> Miden.simulateWASM wmod
   -- putStrLn $ "expr: " ++ show e ++ "  |   result = " ++ show reference
   mres <- runValidation (toMASM wmod) >>= Miden.runMiden
   case mres of

@@ -79,18 +79,18 @@ compareWasmMasmResult expectedOutFile wmod = do
   mmod <- runValidation (toMASM wmod)
   mmasmres <- runMiden mmod
   case (mwasmres, mmasmres) of
-    (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks (reverse vals) stack 0
+    (v, Right stack) -> checkOutput expectedOut stack >> compareStacks (reverse v) stack
     _ -> error ("unexpected results: " ++ show (mwasmres, mmasmres))
 
-  where compareStacks [] masmstack _k = filter (/=0) masmstack `shouldBe` []
-        compareStacks (Wasm.VI32 wasm_w32 : wasm_vs) (masm_w32 : masm_vs) k = do
+  where compareStacks [] masmstack = filter (/=0) masmstack `shouldBe` []
+        compareStacks (Wasm.VI32 wasm_w32 : wasm_vs) (masm_w32 : masm_vs) = do
           wasm_w32 `shouldBe` masm_w32
-          compareStacks wasm_vs masm_vs (k+1)
-        compareStacks (Wasm.VI64 wasm_w64 : wasm_vs) (masm_w64_hi:masm_w64_lo:masm_vs) k = do
+          compareStacks wasm_vs masm_vs
+        compareStacks (Wasm.VI64 wasm_w64 : wasm_vs) (masm_w64_hi:masm_w64_lo:masm_vs) = do
           let masm_w64 = fromFakeW64 (FakeW64 masm_w64_hi masm_w64_lo)
           wasm_w64 `shouldBe` masm_w64
-          compareStacks wasm_vs masm_vs (k+1)
-        compareStacks wasmstack masmstack _k = error $ "cannot compare stacks: " ++ show (wasmstack, masmstack)
+          compareStacks wasm_vs masm_vs
+        compareStacks wasmstack masmstack = error $ "cannot compare stacks: " ++ show (wasmstack, masmstack)
 
 checkOutput :: [Word32] -> [Word32] -> Expectation
 checkOutput expected actual = do

@@ -1,25 +1,23 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Eval where
 
-import Language.Wasm.Interpreter qualified as WASM
-import Language.Wasm.Structure qualified as WASM
-import Language.Wasm.Validate qualified as WASM
-
-import MASM qualified
-import MASM.Interpreter qualified as MASM
-import MASM.Miden qualified as Miden
 import Data.Word
 
-simulateWASM :: WASM.Module -> IO (Maybe [WASM.Value])
+import qualified Language.Wasm.Structure as WASM
+import qualified Language.Wasm.Validate as WASM
+import qualified MASM
+import qualified MASM.Interpreter as MASM
+import qualified MASM.Miden as Miden
+import qualified WASM.WasmTime as WasmTime
+
+simulateWASM :: WASM.Module -> IO WasmTime.WasmResult
 simulateWASM m = case WASM.validate m of
     Left err -> error ("WASM typechecker: " ++ show err)
-    Right mvalid -> do
-      let store = WASM.emptyStore
-          imports = WASM.emptyImports
-      (r, store') <- WASM.instantiate store imports mvalid
+    Right _ -> do
+      r <- WasmTime.runModule m Nothing
       case r of
           Left err -> error ("WASM interpreter: " ++ err)
-          Right minstance -> WASM.invokeExport store' minstance "main" []
+          Right a ->  return a
 
 simulateMASM :: MASM.Module -> Either String ([Word32], MASM.Mem)
 simulateMASM = MASM.runInterp . MASM.interpret

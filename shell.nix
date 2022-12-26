@@ -51,10 +51,10 @@ let llvmPkgs = [ llvmPackages_14.clang llvmPackages_14.libllvm lld_14 ];
 in
 
 mkShell {
-  name = "wasm-checker";
+  name = "starkify";
   buildInputs = [
     cabal-install ghc
-    wabt
+    wabt wasmtime
     rust162 cargo miden
   ] ++ llvmPkgs;
 }
