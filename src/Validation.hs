@@ -64,7 +64,7 @@ data ErrorData
   | UnsupportedMemAlign Natural (W.Instruction Natural)
   | NoMultipleMem
   | UnsupportedImport LT.Text LT.Text LT.Text
-  | ExpectedStack W.ParamsType
+  | ExpectedStack W.ParamsType W.ParamsType
   | UnsupportedArgType W.ValueType
   | EmptyStack
   | NamedGlobalRef LT.Text
@@ -72,7 +72,7 @@ data ErrorData
   | NoMultipleTable
   | UnsupportedElemDynOffset W.ElemSegment
   | UnsupportedNonConsecutiveFuns Word32 W.FuncIndex Word32 W.FuncIndex
-  | BadStarkifyFun Int LT.Text
+  | BadStarkifyFun LT.Text
   deriving (Eq, Ord, Show)
 
 deriving instance Ord (W.Instruction Natural)
@@ -123,8 +123,8 @@ badNoMultipleTable = bad NoMultipleTable
 badNamedGlobalRef :: LT.Text -> V a
 badNamedGlobalRef = bad . NamedGlobalRef
 
-badStarkifyFun :: Int -> LT.Text -> V a
-badStarkifyFun i s = bad (BadStarkifyFun i s)
+badStarkifyFun :: LT.Text -> V a
+badStarkifyFun s = bad (BadStarkifyFun s)
 
 descType :: W.ImportDesc -> LT.Text
 descType idesc = case idesc of
@@ -163,7 +163,7 @@ ppErrData (GlobalMut t) = "unsupported global mutable variable of type: " ++
      W.F32 -> "32 bits floating point"
      W.F64 -> "64 bits floating point"
   )
-ppErrData NoMain = "missing main function"
+ppErrData NoMain = "No start function or 'main' function found in WASM module, cannot proceed."
 ppErrData (StdValidation e) = "standard validator issue: " ++ show e
 ppErrData (UnsupportedInstruction i) = "unsupported WASM instruction: " ++ show i
 ppErrData (Unsupported64Bits opstr) = "unsupported 64 bit operation (" ++ opstr ++ ")"
@@ -172,8 +172,8 @@ ppErrData NoMultipleMem = "multiple memories not supported"
 ppErrData (UnsupportedImport imodule iname idesc) =
   "unsupported import: module=" ++ LT.unpack imodule ++
   ", name=" ++ LT.unpack iname ++ " (" ++ LT.unpack idesc ++ ")"
-ppErrData (ExpectedStack expected) =
-  "expected stack prefix " ++ show expected
+ppErrData (ExpectedStack expected got) =
+  "expected stack prefix " ++ show expected ++ " but got " ++ show (take (length expected) got)
 ppErrData EmptyStack =
   "expected a non-empty stack"
 ppErrData (UnsupportedArgType t) =
@@ -188,6 +188,7 @@ ppErrData (UnsupportedElemDynOffset segment) =
 ppErrData (UnsupportedNonConsecutiveFuns i fi j fj) =
   "non consecutive functions #" ++ show fi ++ " (offset " ++ show i ++ ") and #" ++
   show fj ++ " (offset " ++ show j ++ ")"
+ppErrData (BadStarkifyFun n) = "unknown primitive starkify function " ++ show n
 
 ppErr :: Error ErrorData -> [String]
 ppErr e =

@@ -23,7 +23,7 @@ import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
 import Data.Text.Lazy qualified as T
-import Data.Vector (Vector, (!))
+import Data.Vector (Vector)
 import Data.Vector qualified as V
 import Data.Word (Word8, Word32)
 import GHC.Natural (Natural)
@@ -34,16 +34,13 @@ import MASM.Interpreter (toFakeW64, FakeW64 (..))
 import Tools (dfs)
 import Validation
 import WASI qualified
--- import W2M.Stack (StackElem(..), StackType, StackProblem(..), StackFun)
--- import W2M.Stack qualified as WStack
-
--- import Data.Text.Lazy qualified  as T
--- import Control.Monad.Reader
+import GHC.Stack (HasCallStack)
 
 type WasmAddr = Natural
 type MasmAddr = Word32
 type LocalAddrs = Map WasmAddr (W.ValueType, [MasmAddr])
 type FunName = Text
+type PrimFun = FunName
 data Function = ImportedFun W.Import | StarkifyFun FunName | DefinedFun W.Function
 
 -- Note: Wasm modules may fail to compile if they contain > 2^29 functions.
@@ -60,8 +57,8 @@ toMASM m = do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
   globalsInit <- inContext GlobalsInit getGlobalsInit
   datasInit <- inContext DatasInit getDatasInit
-  when (null entryFunctions) $ error "No start function or 'main' function found in WASM module, cannot proceed."
-  procs <- catMaybes <$> traverse (\ idx -> fmap (procName idx,) <$> fun2MASM idx (allFunctions ! idx)) (toList sortedFunctions)
+  when (null entryFunctions) badNoMain
+  procs <- catMaybes <$> traverse (\ idx -> fmap (procName idx,) <$> fun2MASM idx) (toList sortedFunctions)
   methodInits <- sequence [ concat <$> traverse translateGlobals (WASI.init method) | (_, Left method) <- procs ]
   let (procNames, procs') = unzip $ fmap (second translateProc) procs
 
@@ -71,8 +68,10 @@ toMASM m = do
     <*> return (M.Program (globalsInit ++ datasInit ++ concat methodInits ++ fmap (M.Exec . procName) entryFunctions))
 
   where wasiGlobals :: [Text]
-        wasiGlobals = [ g | Just method <- wasiImport <$> fmap (allFunctions !) (toList sortedFunctions)
-                          , g <- WASI.globals method ]
+        wasiGlobals = [ g
+                      | Right i <- toList sortedFunctions
+                      , method <- maybeToList $ wasiImport (allFunctions ! i)
+                      , g <- WASI.globals method ]
 
         wasiImport :: Function -> Maybe WASI.Method
         wasiImport (ImportedFun (W.Import module' name _)) = Map.lookup name =<< Map.lookup module' WASI.library
@@ -103,18 +102,21 @@ toMASM m = do
         translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
         translateProc (Right p) = pure p
 
-        callGraph :: Map Int (Set Int)
+        callGraph :: Map (Either PrimFun Int) (Set (Either PrimFun Int))
         callGraph = Map.fromListWith (<>) $
-          [ (caller, Set.singleton (fromIntegral callee))
+          [ (Right caller, Set.singleton (Right $ fromIntegral callee))
           | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
           , W.Call callee <- body
           ] ++
-          [ (starkifyCallIndirectId m, Set.singleton (fromIntegral f))
-          | W.ElemSegment _ _ fs <- W.elems m
-          , f <- fs
+          [ ( Left starkifyCallIndirectName
+            , Set.fromList [ Right (fromIntegral f)
+                           | W.ElemSegment _ _ fs <- W.elems m
+                           , f <- fs
+                           ]
+            )
           ] ++
-          [ (f, Set.singleton (starkifyCallIndirectId m))
-          | (f, DefinedFun (W.Function {body})) <- zip [0..] (V.toList allFunctions)
+          [ (Right f, Set.singleton (Left starkifyCallIndirectName))
+          | (f, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
           , W.CallIndirect _ <- body
           ]
 
@@ -122,7 +124,7 @@ toMASM m = do
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
         -- currently pass input to the main function, we can proceed if either is present (and we
         -- should use both if both are present).
-        entryFunctions = fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
+        entryFunctions = Right . fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
 
         -- An export with an empty string is considered to be a "default export".
         -- (https://github.com/bytecodealliance/wasmtime/blob/b0939f66267dc99b56f59fdb7c1db4fce2f578c6/crates/wasmtime/src/linker.rs#L1187)
@@ -141,7 +143,7 @@ toMASM m = do
           | otherwise = Nothing
 
         -- Miden requires procedures to be defined before any execs that reference them.
-        sortedFunctions :: [Int]
+        sortedFunctions :: [Either PrimFun Int]
         sortedFunctions = reverse $ nubOrd $ concatMap (`dfs` callGraph) entryFunctions
 
         numCells :: W.ValueType -> Word32
@@ -207,10 +209,9 @@ toMASM m = do
         functionType _ = error "function type of primitive starkify function?"
 
         -- TODO: Uniquify names if necessary (import/export conflicts or exported names like "f1").
-        procName :: Int -> M.ProcName
-        procName i
-          | i >= length (W.functions m) = starkifyCallIndirectName
-          | otherwise     = T.take 100 $ fixName $ procName'
+        procName :: Either PrimFun Int -> M.ProcName
+        procName (Left f) = f
+        procName (Right i) = T.take 100 $ fixName $ procName'
           where procName' = case allFunctions ! i of
                               ImportedFun (W.Import mo n _) -> mo <> "__" <> n
                               _ -> case exportedName (fromIntegral i) of
@@ -288,46 +289,42 @@ toMASM m = do
                 f n' (_:ctxs) = f n' ctxs
                 f _ [] = []
 
-        fun2MASM :: Int -> Function -> V (Maybe (Either WASI.Method M.Proc))
-        fun2MASM _   f@(ImportedFun i) = inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
-        fun2MASM idx (StarkifyFun nm)
-          | idx == starkifyCallIndirectId m &&
-            nm == starkifyCallIndirectName = Just . Right <$> mkStarkifyCallIndirect (procName . fromIntegral) m
-          | otherwise = badStarkifyFun idx nm
-        fun2MASM _   (DefinedFun (W.Function _ _         [])) = return Nothing
---      fun2MASM (funid, Just name, Nothing)
---        | funid == fromIntegral (maxBound :: Int) &&
---          name == "starkify_call_indirect" = Just <$> mkStarkifyCallIndirect getFunName m
---        | otherwise                        = return Nothing
+        fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
+        fun2MASM (Right idx) = case allFunctions ! idx of
+            f@(ImportedFun i) -> inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
+            DefinedFun (W.Function _ _         []) -> return Nothing
+            DefinedFun (W.Function typ localsTys body) -> inContext (InFunction idx) $ do
+              let wasm_args = W.params (types ! fromIntegral typ)
+                  wasm_locals = localsTys
 
-        -- TODO: Add back function name to context.
-        fun2MASM idx (DefinedFun (W.Function typ localsTys body)) = inContext (InFunction idx) $ do
-          let wasm_args = W.params (types ! fromIntegral typ)
-              wasm_locals = localsTys
+                  localAddrMap :: LocalAddrs
+                  (localAddrMap, nlocalCells) =
+                    foldl' (\(addrs, cnt) (k, ty) -> case ty of
+                               W.I32 -> (Map.insert k (W.I32, [cnt]) addrs, cnt+1)
+                               W.I64 -> (Map.insert k (W.I64, [cnt, cnt+1]) addrs, cnt+2)
+                               _     -> error "localAddrMap: floating point local var?"
+                           )
+                           (Map.empty, 0)
+                           (zip [0..] (wasm_args ++ wasm_locals))
+                  -- the function starts by populating the first nargs local vars
+                  -- with the topmost nargs values on the stack, removing them from
+                  -- the stack as it goes. it assumes the value for the first arg
+                  -- was pushed first, etc, with the value for the last argument
+                  -- being pushed last and therefore popped first.
+                  prelude = reverse $ concat
+                    [ case Map.lookup (fromIntegral k) localAddrMap of
+                        Just (_t, is) -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
+                        -- TODO: Add back function name to error.
+                        _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
+                    | k <- [0..(length wasm_args - 1)]
+                    ]
+              instrs <- translateInstrs localAddrMap body 0
+              return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
+            _ -> error "impossible: integer fun identifier with StarkifyFun?!"
+        fun2MASM (Left nm)
+              | nm == starkifyCallIndirectName = Just . Right <$> mkStarkifyCallIndirect (procName . Right . fromIntegral) m
+              | otherwise                      = badStarkifyFun nm
 
-              localAddrMap :: LocalAddrs
-              (localAddrMap, nlocalCells) =
-                foldl' (\(addrs, cnt) (k, ty) -> case ty of
-                           W.I32 -> (Map.insert k (W.I32, [cnt]) addrs, cnt+1)
-                           W.I64 -> (Map.insert k (W.I64, [cnt, cnt+1]) addrs, cnt+2)
-                           _     -> error "localAddrMap: floating point local var?"
-                       )
-                       (Map.empty, 0)
-                       (zip [0..] (wasm_args ++ wasm_locals))
-              -- the function starts by populating the first nargs local vars
-              -- with the topmost nargs values on the stack, removing them from
-              -- the stack as it goes. it assumes the value for the first arg
-              -- was pushed first, etc, with the value for the last argument
-              -- being pushed last and therefore popped first.
-              prelude = reverse $ concat
-                [ case Map.lookup (fromIntegral k) localAddrMap of
-                    Just (_t, is) -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
-                    -- TODO: Add back function name to error.
-                    _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
-                | k <- [0..(length wasm_args - 1)]
-                ]
-          instrs <- translateInstrs localAddrMap body 0
-          return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
 
         translateInstrs :: LocalAddrs -> W.Expression -> Int -> V [M.Instruction]
         translateInstrs _ [] _k = pure []
@@ -374,10 +371,10 @@ toMASM m = do
         -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
         translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = inContext (InInstruction k i) $ brTable 0 cases
           where brTable _ [] = (M.Drop :) <$> branch defaultIdx
-                brTable i (idx:idxs) = do
+                brTable j (idx:idxs) = do
                   br <- branch idx
-                  br' <- brTable (i+1) idxs
-                  pure [M.Dup 0, M.Eq (Just i), M.If (M.Drop : br) br']
+                  br' <- brTable (j+1) idxs
+                  pure [M.Dup 0, M.Eq (Just j), M.If (M.Drop : br) br']
         translateInstrs _ (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
@@ -392,7 +389,7 @@ toMASM m = do
                       then concat [ if t == W.I64 then [ M.Drop, M.Drop ] else [ M.Drop ]
                                   | t <- params'
                                   ]
-                      else [M.Exec $ procName i]
+                      else [M.Exec $ procName (Right i)]
               typed (reverse params') res' instrs
         translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
@@ -742,7 +739,7 @@ toMASM m = do
           W.FuncType paramsTys retTys -> do
             params <- checkTypes paramsTys
             ret    <- checkTypes retTys
-            typed params ret [M.Exec starkifyCallIndirectName]
+            typed (W.I32:reverse params) ret [M.Exec starkifyCallIndirectName]
 
         translateInstr _ i = unsupportedInstruction i
 
@@ -881,7 +878,11 @@ computeIsNegative = -- [x, ...]
   where hi = 2^(31::Int)
 
 typed :: W.ParamsType -> W.ResultType -> a -> V a
-typed params result x = maybe (bad $ ExpectedStack params) f . stripPrefix params =<< get
+typed params result x = do
+  stk <- get
+  case stripPrefix params stk of
+    Nothing -> bad (ExpectedStack params stk)
+    Just stk' -> f stk'
   where f stack = put (result <> stack) >> pure x
 
 withPrefix :: (W.ValueType -> V a) -> V a
@@ -960,10 +961,15 @@ binarySearchInstrs funName fs = go fs
 starkifyCallIndirectName :: Text
 starkifyCallIndirectName = "starkify_call_indirect"
 
--- | We simulate that the function is part of the WASM module, with index
---   @largest function index in the module + 1@.
-starkifyCallIndirectId :: Integral a => W.Module -> a
-starkifyCallIndirectId m = fromIntegral $ length (W.functions m)
+-- -- | We simulate that the function is part of the WASM module, with index
+-- --   @largest function index in the module + 1@.
+-- starkifyCallIndirectId :: Integral a => Vector Function -> a
+-- starkifyCallIndirectId funs = fromIntegral (V.length funs)
 
 primitiveFuns :: [Function]
 primitiveFuns = [ StarkifyFun starkifyCallIndirectName ]
+
+-- utilities
+
+(!) :: HasCallStack => Vector a -> Int -> a
+(!) = (V.!)
