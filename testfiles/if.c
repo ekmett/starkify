@@ -1,12 +1,12 @@
 __attribute__((noinline))
-unsigned int f(unsigned int x) { return x+1; }
+unsigned short f(unsigned short x) { return x+1; }
 
 __attribute__((noinline))
-unsigned int g(unsigned int x) { return x-1; }
+unsigned short g(unsigned short x) { return x-1; }
 
-unsigned int main()
+unsigned short main()
 {
-    unsigned int x = 1231;
+    unsigned short x = 1231;
     if(x >= 0)
       return f(x);
     else

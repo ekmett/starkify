@@ -1,6 +1,12 @@
-{ pkgs ? import <nixpkgs> {
+{ pkgs ? import (fetchTarball {
+      url = "https://github.com/NixOS/nixpkgs/archive/refs/tags/22.11.tar.gz";
+      sha256 = "sha256:11w3wn2yjhaa5pv20gbfbirvjq6i3m7pqrq2msf0g7cv44vijwgw";
+    }) {
     overlays = [
-      (import (fetchTarball "https://github.com/oxalica/rust-overlay/archive/master.tar.gz"))
+      (import (fetchTarball {
+        url = "https://github.com/oxalica/rust-overlay/archive/fe185fac76e009b4bd543704a8c61077cf70155b.tar.gz";
+        sha256 = "sha256:1ipbr07gxdp7q15vavskypqc1faspz7y7f0sygy88xr7i8p0mls5";
+      }))
     ];
   }
 }:
@@ -29,13 +35,26 @@ let llvmPkgs = [ llvmPackages_14.clang llvmPackages_14.libllvm lld_14 ];
       nativeBuildInputs = [ rust162 ];
       doCheck = false;
     };
+    haskellPackages = haskell.packages.ghc924.override {
+      overrides = self: super: {
+        wasm = pkgs.haskell.lib.dontCheck (self.callHackage "wasm" "1.1.1" {});
+      };
+    };
+    ghc = haskellPackages.ghcWithPackages (p: with p; [
+      aeson
+      monad-validate
+      optparse-applicative
+      pretty-simple
+      temporary
+      wasm
+    ]);
 in
 
 mkShell {
-  name = "wasm-checker";
+  name = "starkify";
   buildInputs = [
-    cabal-install haskell.compiler.ghc924
-    wabt
+    cabal-install ghc
+    wabt wasmtime
     rust162 cargo miden
   ] ++ llvmPkgs;
 }

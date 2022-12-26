@@ -5,3 +5,4 @@ archive/*
 *.pyc
 .DS_Store
 dist-newstyle/
+/dist/

@@ -1,11 +1,11 @@
 __attribute__((noinline))
-unsigned int f(unsigned int i) { return i==5; }
+unsigned short f(unsigned short i) { return i==5; }
 
 __attribute__((noinline))
-unsigned int g(unsigned int i) { return i!=5; }
+unsigned short g(unsigned short i) { return i!=5; }
 
 // to exercise the 'eqz' wasm instruction
 __attribute__((noinline))
-unsigned int h(unsigned int i) { return i==0; }
+unsigned short h(unsigned short i) { return i==0; }
 
-unsigned int main() { return f(10) + g(20); }
+unsigned short main() { return f(10) + g(20); }
