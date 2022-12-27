@@ -11,9 +11,9 @@ import Control.Monad.Writer.Strict
 import Data.DList qualified as DList
 import Data.Text.Lazy qualified as T
 import Data.Foldable
-import Data.Text.Lazy (Text, unpack)
+import Data.Text.Lazy (Text, pack, unpack)
 import Data.Typeable
-import Data.Word
+import Data.Word ( Word32 )
 import Data.String
 import GHC.Exts qualified
 import GHC.Generics
@@ -89,7 +89,12 @@ data Instruction
 
   | Assert
   | AssertZ
+
+  | Comment Text
   deriving (Eq, Ord, Show, Generic, Typeable)
+
+comment :: String -> Instruction
+comment cmt = Comment (pack cmt)
 
 newtype PpMASM a = PpMASM {runPpMASM :: Writer (DList.DList String) a}
   deriving (Generic, Typeable, Functor, Applicative, Monad)
@@ -112,6 +117,9 @@ indent = censor (fmap ("  "++))
 
 ppMASM :: Module -> String
 ppMASM = unlines . toList . execWriter . runPpMASM . ppModule
+
+runPPMasm :: PpMASM a -> String
+runPPMasm = unlines . toList . execWriter . runPpMASM
 
 ppModule :: Module -> PpMASM ()
 ppModule m = do
@@ -207,3 +215,5 @@ ppInstr IXor64 = "exec.u64::checked_xor"
 
 ppInstr Assert = "assert"
 ppInstr AssertZ = "assertz"
+
+ppInstr (Comment comment) = [ "# " ++ unpack comment ]

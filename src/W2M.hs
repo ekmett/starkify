@@ -386,7 +386,10 @@ toMASM m = do
               res' <- checkTypes res
               let instrs =
                     if Set.member i emptyFunctions
-                      then concat [ if t == W.I64 then [ M.Drop, M.Drop ] else [ M.Drop ]
+                      then
+                        -- Comment what empty function we would have called.
+                        (M.comment . M.runPPMasm $ M.ppInstr $ M.Exec $ procName (Right i)) :
+                        concat [ if t == W.I64 then [ M.Drop, M.Drop ] else [ M.Drop ]
                                   | t <- params'
                                   ]
                       else [M.Exec $ procName (Right i)]
