@@ -774,6 +774,23 @@ translateIBinOp W.BS64 op = case op of
           [ M.IShR64 ]           -- [(a >> b%64)_hi, (a >> b%64)_lo, ...]
       ]
     )
+  W.IDivS ->
+    typed [W.I64, W.I64] [W.I64]   -- [b_hi, b_lo, a_hi, a_lo, ...]
+    ( [ M.Dup 3, M.Dup 3 ] ++
+      computeAbs64 ++              -- [abs(a)_hi, abs(a)_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.Dup 3, M.Dup 3 ] ++
+      computeAbs64 ++              -- [abs(b)_hi, abs(b)_lo, abs(a)_hi, abs(a)_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.IDiv64                   -- [(abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      , M.MoveUp 5, M.MoveUp 5     -- [a_hi, a_lo, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, b_hi, b_lo, ...]
+      ] ++ computeIsNegative64 ++  -- [a_negative, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, b_hi, b_lo, ...]
+      [ M.MoveUp 4, M.MoveUp 4     -- [b_hi, b_lo, a_negative, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      ] ++ computeIsNegative64 ++  -- [b_negative, a_negative, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      [ M.IXor                     -- [a_b_diff_sign, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      , M.If                       -- [(abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+          computeNegate64          -- [(-abs(a)/abs(b))_hi, (-abs(a)/abs(b))_lo, ...]
+          []                       -- [(abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      ]
+    )
   _       -> unsupported64Bits op
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop W.I32 M.IAdd
@@ -992,6 +1009,15 @@ computeAbs =           -- [x, ...]
       []               -- [x, ...]
   ]
 
+computeAbs64 :: [M.Instruction]
+computeAbs64 =           -- [x_hi, x_lo, ...]
+  computeDup64 0 ++      -- [x_hi, x_lo, x_hi, x_lo, ...]
+  computeIsNegative64 ++ -- [x_negative, x_hi, x_lo, ...]
+  [ M.If                 -- [x_hi, x_lo, ...]
+      computeNegate64    -- [(-x)_hi, (-x)_lo, ...]
+      []                 -- [x_hi, x_lo, ...]
+  ]
+
 -- negate a number using two's complement encoding:
 -- 4294967295 = 2^32-1 is the largest Word32
 -- 4294967295 + 1 wraps around to turn into 0
@@ -1000,17 +1026,30 @@ computeAbs =           -- [x, ...]
 -- to negate a number using two's complement.
 computeNegate :: [M.Instruction]
 computeNegate =       -- [x, ...]
-  [ M.Push 4294967295 -- [4294967295, x, ...]
+  [ M.Push hi         -- [4294967295, x, ...]
   , M.Swap 1, M.ISub  -- [4294967295 - x, ...]
   , M.Push 1, M.IAdd  -- [4294967295 - x + 1, ...]
   ]
+  where hi = maxBound
+
+computeNegate64 :: [M.Instruction]
+computeNegate64 =       -- [x_hi, x_lo, ...]
+  [ M.Push max_lo
+  , M.Push max_hi       -- [max_hi, max_lo, x_hi, x_lo, ...]
+  , M.MoveUp 3
+  , M.MoveUp 3          -- [x_hi, x_lo, max_hi, max_lo, ...]
+  , M.ISub64            -- [(max-x)_hi, (max-x)_lo, ...]
+  , M.Push 1, M.Push 0  -- [0, 1, (max-x)_hi, (max-x)_lo, ...]
+  , M.IAdd64            -- [(max - x + 1)_hi, (max - x + 1)_lo, ...]
+  ]
+  where FakeW64 max_hi max_lo = toFakeW64 maxBound
 
 computeIsNegative :: [M.Instruction]
 computeIsNegative = -- [x, ...]
   [ M.Push hi       -- [2^31, x, ...]
   , M.IGt           -- [x > 2^31, ...] (meaning it's a two's complement encoded negative integer)
   ]
-  where hi = 2^(31::Int)
+  where hi = 2^(31::Int) - 1
 
 computeIsNegative64 :: [M.Instruction]
 computeIsNegative64 =   -- [a_hi, a_lo, ...]
@@ -1018,7 +1057,7 @@ computeIsNegative64 =   -- [a_hi, a_lo, ...]
   , M.Push neglimit_hi  -- [l_hi, l_lo, a_hi, a_lo, ...]
   , M.IGt64             -- [a > l, ...]
   ]
-  where FakeW64 neglimit_hi neglimit_lo = toFakeW64 (2^(63::Int))
+  where FakeW64 neglimit_hi neglimit_lo = toFakeW64 (2^(63::Int) - 1)
 
 computeNot64 :: [M.Instruction]
 computeNot64 = -- [a_hi, a_lo, ...]

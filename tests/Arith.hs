@@ -197,20 +197,16 @@ exprDepth = 4
 instance Arbitrary (Expr Word32) where
   arbitrary = randomExpr exprDepth ConstU32 (Just True)
 instance Arbitrary (Expr Int32) where
-  -- TODO: Turn 'False' to 'True' when our translation of signed division
-  --       can handle all corner cases. Until then we generate simpler signed
-  --       division/shift expressions.
-  arbitrary = randomExpr exprDepth ConstI32 (Just False)
+  arbitrary = randomExpr exprDepth ConstI32 (Just True)
 instance Arbitrary (Expr Word64) where
   arbitrary = randomExpr exprDepth ConstU64 (Just True)
 instance Arbitrary (Expr Int64) where
-  arbitrary = randomExpr exprDepth ConstI64 Nothing -- TODO: generate signed div and shr
+  arbitrary = randomExpr exprDepth ConstI64 (Just True)
 
 exprEvalCompile :: forall t. (Integral t, Bits t, Typed t, Show t) => Expr t -> Property
 exprEvalCompile e = ioProperty $ do
   when debug $ putStrLn ("\n\n=== " ++ "expr: " ++ show e ++ " ===")
   let wmod = exprToWasm e
-  when debug $ T.putStrLn (pShow wmod)
   Just reference <- fromWStack <$> Miden.simulateWASM wmod
   when debug $ putStrLn $ "result = " ++ show reference
   when debug $ T.putStrLn (pShow wmod)
@@ -226,12 +222,6 @@ exprEvalCompile e = ioProperty $ do
         check midenstack val = case fromMStack midenstack of
           Just res -> val === res
           Nothing -> error "couldn't extract result"
-
-newtype Pow = Pow Int
-  deriving Show
-
-instance Arbitrary Pow where
-  arbitrary = Pow <$> chooseInt (1, 31)
 
 data CmpOp = Lt | Gt | Lte | Gte | Eq | Neq
   deriving (Eq, Show, Enum, Bounded)
