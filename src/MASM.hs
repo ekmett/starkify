@@ -56,6 +56,7 @@ data Instruction
   | CDrop -- cdrop
   | Dup Word32 -- dup.n
   | MoveUp Word32 -- movup.n
+  | MoveDown Word32 -- movdn.n
   | TruncateStack -- exec.sys::truncate_stack
   | SDepth -- sdepth
   | Eq (Maybe Word32) -- eq[.n]
@@ -155,6 +156,7 @@ ppInstr Drop = "drop"
 ppInstr CDrop = "cdrop"
 ppInstr (Dup n) = [ "dup." ++ show n ]
 ppInstr (MoveUp n) = [ "movup." ++ show n ]
+ppInstr (MoveDown n) = [ "movdn." ++ show n ]
 ppInstr TruncateStack = "exec.sys::truncate_stack"
 ppInstr SDepth = "sdepth"
 ppInstr (Eq Nothing) = "eq"

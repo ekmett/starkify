@@ -764,10 +764,8 @@ translateIBinOp W.BS64 op = case op of
       ] ++ computeDup64 1 ++     -- [a_hi, a_lo, b%64, a_hi, a_lo, ...]
       computeIsNegative64 ++     -- [a_negative, b%64, a_hi, a_lo, ...]
       [ M.If                     -- [b%64, a_hi, a_lo, ...]
-          ( [ M.MoveUp 2         -- [a_lo, b%64, a_hi, ...]
-            , M.MoveUp 2         -- [a_hi, a_lo, b%64, ...]
-            ] ++
-            computeNot64 ++      -- [~a_hi, ~a_lo, b%64, ...]
+          ( M.MoveDown 2         -- [a_hi, a_lo, b%64, ...]
+            : computeNot64 ++    -- [~a_hi, ~a_lo, b%64, ...]
             [ M.MoveUp 2         -- [b%64, ~a_hi, ~a_lo, ...]
             , M.IShR64           -- [ (~a >> b%64)_hi, (~a >> b%64)_lo, ...]
             ] ++
