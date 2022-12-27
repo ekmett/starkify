@@ -916,8 +916,8 @@ computeNot64 = -- [a_hi, a_lo, ...]
 
 computeDup64 :: Word32 -> [M.Instruction]
 computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
-  [ M.Dup (i+1)  -- [a_lo, ..., a_hi, a_lo, ...]
-  , M.Dup i      -- [a_hi, a_lo, ..., a_hi, a_lo, ...]
+  [ M.Dup (i+1)      -- [a_lo, ..., a_hi, a_lo, ...]
+  , M.Dup (i+1)      -- [a_hi, a_lo, ..., a_hi, a_lo, ...]
   ]
 
 typed :: W.ParamsType -> W.ResultType -> a -> V a
