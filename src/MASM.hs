@@ -163,7 +163,7 @@ ppInstr (NEq Nothing) = "neq"
 ppInstr (NEq (Just n)) = [ "neq." ++ show n ]
 ppInstr Not = "not"
 
-ppInstr (Add Nothing) = "sub"
+ppInstr (Add Nothing) = "add"
 ppInstr (Add (Just n)) = [ "add." ++ show n ]
 ppInstr (Sub Nothing) = "sub"
 ppInstr (Sub (Just n)) = [ "sub." ++ show n ]
