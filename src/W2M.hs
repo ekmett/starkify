@@ -750,11 +750,32 @@ translateIBinOp W.BS64 op = case op of
   W.IAdd  -> stackBinop W.I64 M.IAdd64
   W.ISub  -> stackBinop W.I64 M.ISub64
   W.IMul  -> stackBinop W.I64 M.IMul64
-  W.IShl  -> stackBinop W.I64 M.IShL64
-  W.IShrU -> stackBinop W.I64 M.IShR64
+  W.IDivU -> stackBinop W.I64 M.IDiv64
+  W.IShl  -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IShL64]
+  W.IShrU -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IShR64]
   W.IOr   -> stackBinop W.I64 M.IOr64
   W.IAnd  -> stackBinop W.I64 M.IAnd64
   W.IXor  -> stackBinop W.I64 M.IXor64
+
+  W.IShrS ->
+    typed [W.I64, W.I64] [W.I64] -- [b_hi, b_lo, a_hi, a_lo, ...]
+    ( [ M.Drop                   -- [b_lo, a_hi, a_lo, ...]
+      , M.Push 64, M.IMod        -- [b%64, a_hi, a_lo, ...]
+      ] ++ computeDup64 1 ++     -- [a_hi, a_lo, b%64, a_hi, a_lo, ...]
+      computeIsNegative64 ++     -- [a_negative, b%64, a_hi, a_lo, ...]
+      [ M.If                     -- [b%64, a_hi, a_lo, ...]
+          ( [ M.MoveUp 2         -- [a_lo, b%64, a_hi, ...]
+            , M.MoveUp 2         -- [a_hi, a_lo, b%64, ...]
+            ] ++
+            computeNot64 ++      -- [~a_hi, ~a_lo, b%64, ...]
+            [ M.MoveUp 2         -- [b%64, ~a_hi, ~a_lo, ...]
+            , M.IShR64           -- [ (~a >> b%64)_hi, (~a >> b%64)_lo, ...]
+            ] ++
+            computeNot64         -- [(a >> b%64)_hi, (a >> b%64)_lo, ...]
+          )
+          [ M.IShR64 ]           -- [(a >> b%64)_hi, (a >> b%64)_lo, ...]
+      ]
+    )
   _       -> unsupported64Bits op
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop W.I32 M.IAdd
@@ -876,6 +897,28 @@ computeIsNegative = -- [x, ...]
   , M.IGt           -- [x > 2^31, ...] (meaning it's a two's complement encoded negative integer)
   ]
   where hi = 2^(31::Int)
+
+computeIsNegative64 :: [M.Instruction]
+computeIsNegative64 =   -- [a_hi, a_lo, ...]
+  [ M.Push neglimit_lo  -- [l_lo, a_hi, a_lo, ...]
+  , M.Push neglimit_hi  -- [l_hi, l_lo, a_hi, a_lo, ...]
+  , M.IGt64             -- [a > l, ...]
+  ]
+  where FakeW64 neglimit_hi neglimit_lo = toFakeW64 (2^(63::Int))
+
+computeNot64 :: [M.Instruction]
+computeNot64 = -- [a_hi, a_lo, ...]
+  [ M.INot     -- [~a_hi, a_lo, ...]
+  , M.Swap 1   -- [a_lo, ~a_hi, ...]
+  , M.INot     -- [~a_lo, ~a_hi, ...]
+  , M.Swap 1
+  ]
+
+computeDup64 :: Word32 -> [M.Instruction]
+computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
+  [ M.Dup (i+1)  -- [a_lo, ..., a_hi, a_lo, ...]
+  , M.Dup i      -- [a_hi, a_lo, ..., a_hi, a_lo, ...]
+  ]
 
 typed :: W.ParamsType -> W.ResultType -> a -> V a
 typed params result x = do
