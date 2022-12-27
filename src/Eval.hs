@@ -22,5 +22,5 @@ simulateWASM m = case WASM.validate m of
 simulateMASM :: MASM.Module -> Either String ([Word32], MASM.Mem)
 simulateMASM = MASM.runInterp . MASM.interpret
 
-runMiden :: MASM.Module -> IO (Either String [Word32])
+runMiden :: Miden.KeepFile -> MASM.Module -> IO (Either String [Word32])
 runMiden = Miden.runMiden

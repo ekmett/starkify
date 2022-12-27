@@ -77,7 +77,7 @@ compareWasmMasmResult expectedOutFile wmod = do
     Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
     Just res -> return res
   mmod <- runValidation (toMASM wmod)
-  mmasmres <- runMiden mmod
+  mmasmres <- runMiden DontKeep mmod
   case (mwasmres, mmasmres) of
     (v, Right stack) -> checkOutput expectedOut stack >> compareStacks (reverse v) stack
     _ -> error ("unexpected results: " ++ show (mwasmres, mmasmres))
