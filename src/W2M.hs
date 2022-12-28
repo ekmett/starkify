@@ -753,11 +753,47 @@ translateIBinOp W.BS64 op = case op of
   W.IAdd  -> stackBinop W.I64 M.IAdd64
   W.ISub  -> stackBinop W.I64 M.ISub64
   W.IMul  -> stackBinop W.I64 M.IMul64
-  W.IShl  -> stackBinop W.I64 M.IShL64
-  W.IShrU -> stackBinop W.I64 M.IShR64
+  W.IDivU -> stackBinop W.I64 M.IDiv64
+  W.IShl  -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IShL64]
+  W.IShrU -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IShR64]
   W.IOr   -> stackBinop W.I64 M.IOr64
   W.IAnd  -> stackBinop W.I64 M.IAnd64
   W.IXor  -> stackBinop W.I64 M.IXor64
+
+  W.IShrS ->
+    typed [W.I64, W.I64] [W.I64] -- [b_hi, b_lo, a_hi, a_lo, ...]
+    ( [ M.Drop                   -- [b_lo, a_hi, a_lo, ...]
+      , M.Push 64, M.IMod        -- [b%64, a_hi, a_lo, ...]
+      ] ++ computeDup64 1 ++     -- [a_hi, a_lo, b%64, a_hi, a_lo, ...]
+      computeIsNegative64 ++     -- [a_negative, b%64, a_hi, a_lo, ...]
+      [ M.If                     -- [b%64, a_hi, a_lo, ...]
+          ( M.MoveDown 2         -- [a_hi, a_lo, b%64, ...]
+            : computeNot64 ++    -- [~a_hi, ~a_lo, b%64, ...]
+            [ M.MoveUp 2         -- [b%64, ~a_hi, ~a_lo, ...]
+            , M.IShR64           -- [ (~a >> b%64)_hi, (~a >> b%64)_lo, ...]
+            ] ++
+            computeNot64         -- [(a >> b%64)_hi, (a >> b%64)_lo, ...]
+          )
+          [ M.IShR64 ]           -- [(a >> b%64)_hi, (a >> b%64)_lo, ...]
+      ]
+    )
+  W.IDivS ->
+    typed [W.I64, W.I64] [W.I64]   -- [b_hi, b_lo, a_hi, a_lo, ...]
+    ( [ M.Dup 3, M.Dup 3 ] ++
+      computeAbs64 ++              -- [abs(a)_hi, abs(a)_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.Dup 3, M.Dup 3 ] ++
+      computeAbs64 ++              -- [abs(b)_hi, abs(b)_lo, abs(a)_hi, abs(a)_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.IDiv64                   -- [(abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      , M.MoveUp 5, M.MoveUp 5     -- [a_hi, a_lo, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, b_hi, b_lo, ...]
+      ] ++ computeIsNegative64 ++  -- [a_negative, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, b_hi, b_lo, ...]
+      [ M.MoveUp 4, M.MoveUp 4     -- [b_hi, b_lo, a_negative, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      ] ++ computeIsNegative64 ++  -- [b_negative, a_negative, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      [ M.IXor                     -- [a_b_diff_sign, (abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      , M.If                       -- [(abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+          computeNegate64          -- [(-abs(a)/abs(b))_hi, (-abs(a)/abs(b))_lo, ...]
+          []                       -- [(abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
+      ]
+    )
   _       -> unsupported64Bits op
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop W.I32 M.IAdd
@@ -809,7 +845,76 @@ translateIRelOp W.BS64 op = case op of
   W.IGtU -> stackRelop W.I64 M.IGt64
   W.ILeU -> stackRelop W.I64 M.ILte64
   W.IGeU -> stackRelop W.I64 M.IGte64
-  _      -> unsupported64Bits op
+  W.ILtS -> typed [W.I64, W.I64] [W.I32] $      -- [b_hi, b_lo, a_hi, a_lo, ...]
+    ( [ M.Dup 3, M.Dup 3                        -- [a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      ] ++ computeIsNegative64 ++               -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.Dup 2, M.Dup 2                        -- [b_hi, b_lo, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      ] ++ computeIsNegative64 ++               -- [b_neg, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.Dup 1, M.Dup 1, M.IXor                -- [a_b_diff_sign, b_neg, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      , M.If                                    -- [b_neg, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+          -- different sign
+          [ M.If                                -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+              -- b negative
+              [ M.Drop, M.Drop, M.Drop
+              , M.Drop, M.Drop                  -- [...]
+              , M.Push 0                        -- [0, ...] (a < b is false, because a >= 0 and b < 0)
+              ]
+              -- a negative
+              [ M.Drop, M.Drop, M.Drop
+              , M.Drop, M.Drop                  -- [...]
+              , M.Push 1                        -- [1, ...] (a < b is true, because a < 0 and b >= 0)
+              ]
+          ]
+          -- same sign
+          [ M.Drop, M.Drop                      -- [b_hi, b_lo, a_hi, a_lo, ...]
+          , M.ILt64                             -- [a < b, ...]
+          ]
+      ]
+    )
+  W.IGtS -> typed [W.I64, W.I64] [W.I32] $      -- [b_hi, b_lo, a_hi, a_lo, ...]
+    ( [ M.Dup 3, M.Dup 3                        -- [a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
+      ] ++ computeIsNegative64 ++               -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.Dup 2, M.Dup 2                        -- [b_hi, b_lo, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      ] ++ computeIsNegative64 ++               -- [b_neg, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      [ M.Dup 1, M.Dup 1, M.IXor                -- [a_b_diff_sign, b_neg, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+      , M.If                                    -- [b_neg, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+          -- different sign
+          [ M.If                                -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
+              -- b negative
+              [ M.Drop, M.Drop, M.Drop
+              , M.Drop, M.Drop                  -- [...]
+              , M.Push 1                        -- [1, ...] (a > b is true, because a >= 0 and b < 0)
+              ]
+              -- a negative
+              [ M.Drop, M.Drop, M.Drop
+              , M.Drop, M.Drop                  -- [...]
+              , M.Push 0                        -- [0, ...] (a > b is false, because a < 0 and b >= 0)
+              ]
+          ]
+          -- same sign
+          [ M.Drop, M.Drop                      -- [b_hi, b_lo, a_hi, a_lo, ...]
+          , M.IGt64                             -- [a > b, ...]
+          ]
+      ]
+    )
+  W.ILeS -> do
+    s <- get
+    put [W.I64, W.I64]
+    unsignedGtInstrs <- translateIRelOp W.BS64 W.IGtS
+    put s
+    typed [W.I64, W.I64] [W.I32]     -- [b_hi, b_lo, a_hi, a_lo, ...]
+      ( unsignedGtInstrs ++          -- [a > b, ...]
+        [M.Push 1, M.IXor]           -- [a <= b, ...]
+      )
+  W.IGeS -> do
+    s <- get
+    put [W.I64, W.I64]
+    unsignedLtInstrs <- translateIRelOp W.BS64 W.ILtS
+    put s
+    typed [W.I64, W.I64] [W.I32]     -- [b_hi, b_lo, a_hi, a_lo, ...]
+      ( unsignedLtInstrs ++          -- [a < b, ...]
+        [M.Push 1, M.IXor]           -- [a >= b, ...]
+      )
 translateIRelOp W.BS32 op = case op of
   W.IEq  -> stackRelop W.I32 (M.IEq Nothing)
   W.INe  -> stackRelop W.I32 M.INeq
@@ -817,25 +922,72 @@ translateIRelOp W.BS32 op = case op of
   W.IGtU -> stackRelop W.I32 M.IGt
   W.ILeU -> stackRelop W.I32 M.ILte
   W.IGeU -> stackRelop W.I32 M.IGte
-  W.ILtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
-    ( M.ISub                                    -- [a-b, ...]
-      : computeIsNegative                       -- [a-b < 0, ...] =
-                                                -- [a<b, ...]
-    )
-  W.IGtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
-    ( [ M.Swap 1                                -- [b-a, ...]
-      , M.ISub                                  -- [b-a, ...]
-      ] ++ computeIsNegative                    -- [b-a < 0, ...] =
-                                                -- [b<a, ...]
-    )
-  W.IGeS -> typed [W.I32, W.I32] [W.I32]              -- [b, a, ...]
-      [ M.Dup 0, M.Dup 2                              -- [b, a, b, a, ...]
-      , M.IEq Nothing                                 -- [a == b, b, a, ...]
-      , M.If                                          -- [b, a, ...]
-          [ M.Drop, M.Drop, M.Push 1 ]                -- [1, ...]
-          ([ M.Swap 1, M.ISub ] ++ computeIsNegative) -- [a > b, ...]
+  W.ILtS -> typed [W.I32, W.I32] [W.I32] $      -- [b, a, ...]
+    ( [ M.Dup 1
+      ] ++ computeIsNegative ++                 -- [a_neg, b, a, ...]
+      [ M.Dup 1
+      ] ++ computeIsNegative ++                 -- [b_neg, a_neg, b, a, ...]
+      [ M.Dup 1, M.Dup 1, M.IXor                -- [a_b_diff_sign, b_neg, a_neg, b, a, ...]
+      , M.If                                    -- [b_neg, a_neg, b, a, ...]
+          -- different sign
+          [ M.If                                -- [a_neg, b, a, ...]
+              -- b negative
+              [ M.Drop, M.Drop, M.Drop          -- [...]
+              , M.Push 0                        -- [0, ...] (a < b is false, because a >= 0 and b < 0)
+              ]
+              -- a negative
+              [ M.Drop, M.Drop, M.Drop          -- [...]
+              , M.Push 1                        -- [1, ...] (a < b is true, because a < 0 and b >= 0)
+              ]
+          ]
+          -- same sign
+          [ M.Drop, M.Drop                      -- [b, a, ...]
+          , M.ILt                               -- [a < b, ...]
+          ]
       ]
-  _      -> unsupportedInstruction (W.IRelOp W.BS32 op)
+    )
+  W.IGtS -> typed [W.I32, W.I32] [W.I32] $      -- [b, a, ...]
+    ( [ M.Dup 1
+      ] ++ computeIsNegative ++                 -- [a_neg, b, a, ...]
+      [ M.Dup 1
+      ] ++ computeIsNegative ++                 -- [b_neg, a_neg, b, a, ...]
+      [ M.Dup 1, M.Dup 1, M.IXor                -- [a_b_diff_sign, b_neg, a_neg, b, a, ...]
+      , M.If                                    -- [b_neg, a_neg, b, a, ...]
+          -- different sign
+          [ M.If                                -- [a_neg, b, a, ...]
+              -- b negative
+              [ M.Drop, M.Drop, M.Drop          -- [...]
+              , M.Push 1                        -- [1, ...] (a > b is true, because a >= 0 and b < 0)
+              ]
+              -- a negative
+              [ M.Drop, M.Drop, M.Drop          -- [...]
+              , M.Push 0                        -- [0, ...] (a > b is false, because a < 0 and b >= 0)
+              ]
+          ]
+          -- same sign
+          [ M.Drop, M.Drop                      -- [b, a, ...]
+          , M.IGt                               -- [a > b, ...]
+          ]
+      ]
+    )
+  W.ILeS -> do
+    s <- get
+    put [W.I32, W.I32]
+    unsignedGtInstrs <- translateIRelOp W.BS32 W.IGtS
+    put s
+    typed [W.I32, W.I32] [W.I32]     -- [b, a, ...]
+      ( unsignedGtInstrs ++          -- [a > b, ...]
+        [M.Push 1, M.IXor]           -- [a <= b, ...]
+      )
+  W.IGeS -> do
+    s <- get
+    put [W.I32, W.I32]
+    unsignedLtInstrs <- translateIRelOp W.BS32 W.ILtS
+    put s
+    typed [W.I32, W.I32] [W.I32]     -- [b, a, ...]
+      ( unsignedLtInstrs ++          -- [a < b, ...]
+        [M.Push 1, M.IXor]           -- [a >= b, ...]
+      )
 
 checkTypes :: [W.ValueType] -> V [W.ValueType]
 checkTypes = traverse f
@@ -860,6 +1012,15 @@ computeAbs =           -- [x, ...]
       []               -- [x, ...]
   ]
 
+computeAbs64 :: [M.Instruction]
+computeAbs64 =           -- [x_hi, x_lo, ...]
+  computeDup64 0 ++      -- [x_hi, x_lo, x_hi, x_lo, ...]
+  computeIsNegative64 ++ -- [x_negative, x_hi, x_lo, ...]
+  [ M.If                 -- [x_hi, x_lo, ...]
+      computeNegate64    -- [(-x)_hi, (-x)_lo, ...]
+      []                 -- [x_hi, x_lo, ...]
+  ]
+
 -- negate a number using two's complement encoding:
 -- 4294967295 = 2^32-1 is the largest Word32
 -- 4294967295 + 1 wraps around to turn into 0
@@ -868,17 +1029,52 @@ computeAbs =           -- [x, ...]
 -- to negate a number using two's complement.
 computeNegate :: [M.Instruction]
 computeNegate =       -- [x, ...]
-  [ M.Push 4294967295 -- [4294967295, x, ...]
+  [ M.Push hi         -- [4294967295, x, ...]
   , M.Swap 1, M.ISub  -- [4294967295 - x, ...]
   , M.Push 1, M.IAdd  -- [4294967295 - x + 1, ...]
   ]
+  where hi = maxBound
+
+computeNegate64 :: [M.Instruction]
+computeNegate64 =       -- [x_hi, x_lo, ...]
+  [ M.Push max_lo
+  , M.Push max_hi       -- [max_hi, max_lo, x_hi, x_lo, ...]
+  , M.MoveUp 3
+  , M.MoveUp 3          -- [x_hi, x_lo, max_hi, max_lo, ...]
+  , M.ISub64            -- [(max-x)_hi, (max-x)_lo, ...]
+  , M.Push 1, M.Push 0  -- [0, 1, (max-x)_hi, (max-x)_lo, ...]
+  , M.IAdd64            -- [(max - x + 1)_hi, (max - x + 1)_lo, ...]
+  ]
+  where FakeW64 max_hi max_lo = toFakeW64 maxBound
 
 computeIsNegative :: [M.Instruction]
 computeIsNegative = -- [x, ...]
-  [ M.Push hi       -- [2^31, x, ...]
-  , M.IGt           -- [x > 2^31, ...] (meaning it's a two's complement encoded negative integer)
+  [ M.Push hi       -- [2^31-1, x, ...]
+  , M.IGt           -- [x > 2^31-1, ...] (meaning it's a two's complement encoded negative integer)
   ]
-  where hi = 2^(31::Int)
+  where hi = 2^(31::Int) - 1
+
+computeIsNegative64 :: [M.Instruction]
+computeIsNegative64 =   -- [a_hi, a_lo, ...]
+  [ M.Push neglimit_lo  -- [l_lo, a_hi, a_lo, ...]
+  , M.Push neglimit_hi  -- [l_hi, l_lo, a_hi, a_lo, ...]
+  , M.IGt64             -- [a > l, ...]
+  ]
+  where FakeW64 neglimit_hi neglimit_lo = toFakeW64 (2^(63::Int) - 1)
+
+computeNot64 :: [M.Instruction]
+computeNot64 = -- [a_hi, a_lo, ...]
+  [ M.INot     -- [~a_hi, a_lo, ...]
+  , M.Swap 1   -- [a_lo, ~a_hi, ...]
+  , M.INot     -- [~a_lo, ~a_hi, ...]
+  , M.Swap 1
+  ]
+
+computeDup64 :: Word32 -> [M.Instruction]
+computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
+  [ M.Dup (i+1)      -- [a_lo, ..., a_hi, a_lo, ...]
+  , M.Dup (i+1)      -- [a_hi, a_lo, ..., a_hi, a_lo, ...]
+  ]
 
 typed :: W.ParamsType -> W.ResultType -> a -> V a
 typed params result x = do

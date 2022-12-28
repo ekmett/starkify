@@ -56,6 +56,7 @@ data Instruction
   | CDrop -- cdrop
   | Dup Word32 -- dup.n
   | MoveUp Word32 -- movup.n
+  | MoveDown Word32 -- movdn.n
   | TruncateStack -- exec.sys::truncate_stack
   | SDepth -- sdepth
   | Eq (Maybe Word32) -- eq[.n]
@@ -81,7 +82,7 @@ data Instruction
   | ILt | IGt | ILte | IGte -- u32checked_{lt[e], gt[e]}
 
   -- "faked 64 bits" operations, u64::checked_{add,sub,mul}
-  | IAdd64 | ISub64 | IMul64
+  | IAdd64 | ISub64 | IMul64 | IDiv64
   | IShL64 | IShR64
   | IOr64 | IAnd64 | IXor64
   | IEq64 | IEqz64 | INeq64
@@ -163,6 +164,7 @@ ppInstr Drop = "drop"
 ppInstr CDrop = "cdrop"
 ppInstr (Dup n) = [ "dup." ++ show n ]
 ppInstr (MoveUp n) = [ "movup." ++ show n ]
+ppInstr (MoveDown n) = [ "movdn." ++ show n ]
 ppInstr TruncateStack = "exec.sys::truncate_stack"
 ppInstr SDepth = "sdepth"
 ppInstr (Eq Nothing) = "eq"
@@ -198,17 +200,18 @@ ppInstr INot = "u32checked_not"
 ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
 ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
 ppInstr IAdd64 = "exec.u64::wrapping_add"
-ppInstr ISub64 = "exec.u64::checked_sub"
-ppInstr IMul64 = "exec.u64::checked_mul"
+ppInstr ISub64 = "exec.u64::wrapping_sub"
+ppInstr IMul64 = "exec.u64::wrapping_mul"
+ppInstr IDiv64 = "exec.u64::checked_div"
 ppInstr IEq64 = "exec.u64::checked_eq"
 ppInstr INeq64 = "exec.u64::checked_neq"
 ppInstr IEqz64 = "exec.u64::checked_eqz"
 ppInstr ILt64 = "exec.u64::checked_lt"
 ppInstr IGt64 = "exec.u64::checked_gt"
-ppInstr ILte64 = "exec.u64::checkted_lte"
+ppInstr ILte64 = "exec.u64::checked_lte"
 ppInstr IGte64 = "exec.u64::checked_gte"
-ppInstr IShL64 = "exec.u64::overflowing_shl"
-ppInstr IShR64 = "exec.u64::overflowing_shr"
+ppInstr IShL64 = "exec.u64::unchecked_shl"
+ppInstr IShR64 = "exec.u64::unchecked_shr"
 ppInstr IOr64 = "exec.u64::checked_or"
 ppInstr IAnd64 = "exec.u64::checked_and"
 ppInstr IXor64 = "exec.u64::checked_xor"
