@@ -261,12 +261,16 @@ toMASM m = do
         blockParamsType (W.TypeIndex ti) = W.params $ types ! fromIntegral ti
 
         blockNBranchType :: Natural -> V W.ResultType
-        blockNBranchType = asks . f
-          where f 0 (InBlock Block t _:_) = blockResultType t
+        blockNBranchType frames = asks (f frames)
+          where f :: Natural -> [Ctx] -> W.ResultType
+                f 0 (InBlock Block t _:_) = blockResultType t
                 f 0 (InBlock Loop t _:_) = blockParamsType t
                 f n (InBlock {}:ctxs) = f (n-1) ctxs
                 f _ (InFunction idx:_) = W.results (functionType (allFunctions ! idx))
                 f n (_:ctxs) = f n ctxs
+                f n [] = error $
+                  "Asked to go up " ++ show frames ++ " blocks, "
+                  ++ "but we only have " ++ show (frames - n) ++ " of context."
 
         stackFromBlockN :: Natural -> V W.ResultType
         stackFromBlockN n = do
