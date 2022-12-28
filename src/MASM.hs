@@ -82,7 +82,7 @@ data Instruction
   | ILt | IGt | ILte | IGte -- u32checked_{lt[e], gt[e]}
 
   -- "faked 64 bits" operations, u64::checked_{add,sub,mul}
-  | IAdd64 | ISub64 | IMul64 | IDiv64
+  | IAdd64 | ISub64 | IMul64 | IDiv64 | IMod64
   | IShL64 | IShR64
   | IOr64 | IAnd64 | IXor64
   | IEq64 | IEqz64 | INeq64
@@ -200,9 +200,10 @@ ppInstr INot = "u32checked_not"
 ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
 ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
 ppInstr IAdd64 = "exec.u64::wrapping_add"
-ppInstr ISub64 = "exec.u64::wrapping_sub"
+ppInstr ISub64 = "exec.u64::wrapping_mul"
 ppInstr IMul64 = "exec.u64::wrapping_mul"
 ppInstr IDiv64 = "exec.u64::checked_div"
+ppInstr IMod64 = "exec.u64::checked_mod"
 ppInstr IEq64 = "exec.u64::checked_eq"
 ppInstr INeq64 = "exec.u64::checked_neq"
 ppInstr IEqz64 = "exec.u64::checked_eqz"
