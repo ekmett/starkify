@@ -780,6 +780,7 @@ translateIBinOp W.BS64 op = case op of
           []                       -- [(abs(a)/abs(b))_hi, (abs(a)/abs(b))_lo, ...]
       ]
     )
+  W.IRemU -> stackBinop W.I64 M.IMod64
   _       -> unsupported64Bits op
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop W.I32 M.IAdd
