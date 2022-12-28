@@ -216,4 +216,4 @@ ppInstr IXor64 = "exec.u64::checked_xor"
 ppInstr Assert = "assert"
 ppInstr AssertZ = "assertz"
 
-ppInstr (Comment comment) = [ "# " ++ unpack comment ]
+ppInstr (Comment cmt) = [ "# " ++ unpack cmt ]
