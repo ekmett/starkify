@@ -211,7 +211,7 @@ toMASM m = do
         -- TODO: Uniquify names if necessary (import/export conflicts or exported names like "f1").
         procName :: Either PrimFun Int -> M.ProcName
         procName (Left f) = f
-        procName (Right i) = T.take 100 $ fixName $ procName'
+        procName (Right i) = T.take 100 $ fixName procName'
           where procName' = case allFunctions ! i of
                               ImportedFun (W.Import mo n _) -> mo <> "__" <> n
                               _ -> case exportedName (fromIntegral i) of
@@ -275,7 +275,7 @@ toMASM m = do
         blockNBranchType = asks . f
           where f 0 (InBlock Block t _:_) = blockResultType t
                 f 0 (InBlock Loop t _:_) = blockParamsType t
-                f n (InBlock _ _ _:ctxs) = f (n-1) ctxs
+                f n (InBlock {}:ctxs) = f (n-1) ctxs
                 f _ (InFunction idx:_) = W.results (functionType (allFunctions ! idx))
                 f n (_:ctxs) = f n ctxs
 
@@ -1128,7 +1128,7 @@ mkStarkifyCallIndirect funName m = inContext CallIndirectFun $ do
         guardAllConsecutive _ = return ()
 
 binarySearchInstrs :: (W.FuncIndex -> T.Text) -> [(Word32, W.FuncIndex)] -> [M.Instruction]
-binarySearchInstrs funName fs = go fs
+binarySearchInstrs funName = go
   where go [] = []
         go [(_i, fi)] = [ M.Drop, M.Exec (funName fi) ]
         go funs =
