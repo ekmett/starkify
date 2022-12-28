@@ -52,6 +52,15 @@ branchCounter = 0
 firstNonReservedAddress :: MasmAddr
 firstNonReservedAddress = branchCounter + 1
 
+numCells :: Num a => W.ValueType -> a
+numCells W.I32 = 1
+numCells W.I64 = 2
+numCells t = error $ "unsupported value type: " ++ show t
+
+globalTypeToValue :: W.GlobalType -> W.ValueType
+globalTypeToValue (W.Const vt) = vt
+globalTypeToValue (W.Mut vt) = vt
+
 toMASM :: W.Module -> V M.Module
 toMASM m = do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
@@ -82,9 +91,7 @@ toMASM m = do
         wasiGlobalsAddrMap = Map.fromList (zip wasiGlobals [firstNonReservedAddress..])
         memBeginning' = maximum (firstNonReservedAddress : Map.elems wasiGlobalsAddrMap)
 
-        ncells globl_i = case W.globalType globl_i of
-            W.Const t -> numCells t
-            W.Mut   t -> numCells t
+        ncells = numCells . globalTypeToValue . W.globalType
 
         globalsAddrMap' = scanl (+) memBeginning' $ fmap ncells (W.globals m)
 
@@ -146,12 +153,6 @@ toMASM m = do
         sortedFunctions :: [Either PrimFun Int]
         sortedFunctions = reverse $ nubOrd $ concatMap (`dfs` callGraph) entryFunctions
 
-        numCells :: W.ValueType -> Word32
-        numCells t = case t of
-          W.I32 -> 1
-          W.I64 -> 2
-          _ -> error "numCells called on non integer value type"
-
         getDatasInit :: V [M.Instruction]
         getDatasInit = concat <$> traverse getDataInit (W.datas m)
 
@@ -173,16 +174,7 @@ toMASM m = do
         getGlobalInit (k, g) =
           translateInstrs mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k]) 0
 
-        getGlobalTy k
-          | fromIntegral k < length (W.globals m) = case t of
-              W.I32 -> W.I32
-              W.I64 -> W.I64
-              _     -> error "unsupported global type"
-          | otherwise = error "getGlobalTy: index too large"
-
-            where t = case W.globalType (W.globals m !! fromIntegral k) of
-                        W.Const ct -> ct
-                        W.Mut mt -> mt
+        getGlobalTy k = globalTypeToValue . W.globalType $ W.globals m !! fromIntegral k
 
         -- "Functions are referenced through function indices, starting with the smallest index not referencing a function import."
         --                                              (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-module)
@@ -227,7 +219,7 @@ toMASM m = do
           -- Clean up the stack.
           stack <- stackFromBlockN idx
           t <- blockNBranchType idx
-          let resultStackSize = sum $ fmap typeStackSize t
+          let resultStackSize = sum $ fmap numCells t
               drop' = case resultStackSize of
                         0 -> [M.Drop]
                         1 -> [M.Swap 1, M.Drop]
@@ -240,9 +232,6 @@ toMASM m = do
                         , M.MemStore (Just branchCounter)
                         , M.Drop
                         ]
-          where typeStackSize W.I32 = 1
-                typeStackSize W.I64 = 2
-                typeStackSize t = error $ "typeStackSize: unsupported floating type " ++ show t
 
         continue :: [M.Instruction] -> [M.Instruction]
         continue is =
@@ -298,14 +287,14 @@ toMASM m = do
                   wasm_locals = localsTys
 
                   localAddrMap :: LocalAddrs
-                  (localAddrMap, nlocalCells) =
-                    foldl' (\(addrs, cnt) (k, ty) -> case ty of
-                               W.I32 -> (Map.insert k (W.I32, [cnt]) addrs, cnt+1)
-                               W.I64 -> (Map.insert k (W.I64, [cnt, cnt+1]) addrs, cnt+2)
-                               _     -> error "localAddrMap: floating point local var?"
-                           )
-                           (Map.empty, 0)
-                           (zip [0..] (wasm_args ++ wasm_locals))
+                  (nlocalCells, localAddrMap) =
+                    let argsAndLocals = (wasm_args ++ wasm_locals)
+                        sizes = fmap numCells argsAndLocals
+                        starts = scanl (+) 0 sizes
+                        addresses = zipWith (\start end -> [start..end-1])
+                          starts (drop 1 starts)
+                      in (last starts, Map.fromList $ zip [0..] (zip argsAndLocals addresses))
+
                   -- the function starts by populating the first nargs local vars
                   -- with the topmost nargs values on the stack, removing them from
                   -- the stack as it goes. it assumes the value for the first arg
@@ -729,12 +718,9 @@ toMASM m = do
 
         translateInstr _ W.I64Eqz = typed [W.I64] [W.I32] [M.IEqz64]
 
-        translateInstr _ W.Drop = withPrefix
           -- is the top of the WASM stack an i32 or i64, at this point in time?
           -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
-          \case
-            W.I32 -> return [M.Drop]
-            W.I64 -> return [M.Drop, M.Drop]
+        translateInstr _ W.Drop = withPrefix $ pure . \t -> replicate (numCells t) M.Drop
 
         translateInstr _ W.Unreachable = pure [M.Push 0, M.Assert]
 
