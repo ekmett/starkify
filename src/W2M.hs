@@ -1046,8 +1046,8 @@ computeNegate64 =       -- [x_hi, x_lo, ...]
 
 computeIsNegative :: [M.Instruction]
 computeIsNegative = -- [x, ...]
-  [ M.Push hi       -- [2^31, x, ...]
-  , M.IGt           -- [x > 2^31, ...] (meaning it's a two's complement encoded negative integer)
+  [ M.Push hi       -- [2^31-1, x, ...]
+  , M.IGt           -- [x > 2^31-1, ...] (meaning it's a two's complement encoded negative integer)
   ]
   where hi = 2^(31::Int) - 1
 
