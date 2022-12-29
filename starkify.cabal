@@ -19,7 +19,6 @@ library
     MASM.Miden,
     Validation,
     W2M,
-    Count,
     Tools,
     WASI,
     WASM.WasmTime
