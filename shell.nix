@@ -4,8 +4,8 @@
     }) {
     overlays = [
       (import (fetchTarball {
-        url = "https://github.com/oxalica/rust-overlay/archive/fe185fac76e009b4bd543704a8c61077cf70155b.tar.gz";
-        sha256 = "sha256:1ipbr07gxdp7q15vavskypqc1faspz7y7f0sygy88xr7i8p0mls5";
+        url = "https://github.com/oxalica/rust-overlay/archive/ede977678e5d0164316998487e686d0790744cd7.tar.gz";
+        sha256 = "sha256:05sk61p3a5dhqfiaz7w01fc5fphxhl9d1aizwbvgiw7g0hrbc4v8";
       }))
     ];
   }
@@ -13,26 +13,21 @@
 
 with pkgs;
 let llvmPkgs = [ llvmPackages_14.clang llvmPackages_14.libllvm lld_14 ];
-    rust162 = rust-bin.stable."1.62.0".default;
-    miden = rustPlatform.buildRustPackage {
+    rust166 = rust-bin.stable."1.66.0".default;
+    miden = rustPlatform.buildRustPackage rec {
       pname = "miden";
-      version = "30afebad83fae8651f25d65e739c907b94d678d9";
+      version = "a95e9c30376646669b0353b55739edc4cc520d29";
       src = fetchFromGitHub {
-        owner = "maticnetwork";
-        repo = "miden";
-        rev = "fea07e42094dcb0f1f0835507e6fbe05f9f09158";
-        hash = "sha256-ueJRw9zcjOwkdh3vivhjJOvjHl0ZhDEMAx0ow8Oz9DM=";
+        owner = "0xPolygonMiden";
+        repo = "miden-vm";
+        rev = version;
+        sha256 = "sha256-hXKFmCiBJ2JT1RMtNe4gS7gHdd7OE6hdVPyG5BjSv1U=";
       };
-      cargoPatches = [
-        ./miden_cargolock.patch
-      ];
-      cargoLock = {
-        lockFile = ./miden_cargo.lock;
-      };
-      cargoSha256 = lib.fakeSha256;
+      cargoPatches = [ ./miden_cargolock.patch ];
+      cargoLock.lockFile = ./miden_cargo.lock;
       buildType = "release";
       buildFeatures = [ "executable" "concurrent" ];
-      nativeBuildInputs = [ rust162 ];
+      nativeBuildInputs = [ rust166 ];
       doCheck = false;
     };
     haskellPackages = haskell.packages.ghc924.override {
@@ -55,6 +50,6 @@ mkShell {
   buildInputs = [
     cabal-install ghc
     wabt wasmtime
-    rust162 cargo miden
+    rust166 cargo miden
   ] ++ llvmPkgs;
 }
