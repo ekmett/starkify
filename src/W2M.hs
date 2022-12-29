@@ -307,7 +307,7 @@ toMASM m = do
                   -- being pushed last and therefore popped first.
                   prelude = reverse $ concat
                     [ case Map.lookup (fromIntegral k) localAddrMap of
-                        Just (_t, is) -> [ M.LocStore i | i <- is ]
+                        Just (_t, is) -> map M.LocStore is
                         -- TODO: Add back function name to error.
                         _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
                     | k <- [0..(length wasm_args - 1)]
