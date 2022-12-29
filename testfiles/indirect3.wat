@@ -1,6 +1,6 @@
 ;; .out for this was computed with:
 ;; ghci> let f_i i x = i*x + 1
-;; ghci> go i acc = if i > 100 then acc else go (i+1) (f_i i acc) 
+;; ghci> go i acc = if i > 100 then acc else go (i+1) (f_i i acc)
 ;; ghci> go 1 0 :: Data.Word.Word32
 ;; 1180553153
 (module

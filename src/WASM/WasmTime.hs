@@ -26,7 +26,7 @@ runModule wmod mfun = withSystemTempDirectory "starkify-wasmtime-XXX" $ \dir -> 
     let path = dir </> "mod.wasm"
     LBS.writeFile path (WASM.dumpModuleLazy wmod)
     either (pure . Left) (run path fun) getRetTys
-  
+
     where fun = fromMaybe "main" mfun
           getRetTys = do
             fidx <- maybe (Left $ "couldn't find function '" ++ fun ++ "' in WASM module") Right findFun
@@ -37,7 +37,7 @@ runModule wmod mfun = withSystemTempDirectory "starkify-wasmtime-XXX" $ \dir -> 
               [ i
               | WASM.Export name (WASM.ExportFunc i) <- WASM.exports wmod
               , name == T.pack fun
-              ] 
+              ]
 
 run :: FilePath -> FunName -> [WASM.ValueType] -> IO (Either String WasmResult)
 run fp fun retTys = do
