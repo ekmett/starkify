@@ -307,7 +307,7 @@ toMASM m = do
                   -- being pushed last and therefore popped first.
                   prelude = reverse $ concat
                     [ case Map.lookup (fromIntegral k) localAddrMap of
-                        Just (_t, is) -> concat [ [ M.LocStore i ] | i <- is ]
+                        Just (_t, is) -> [ M.LocStore i | i <- is ]
                         -- TODO: Add back function name to error.
                         _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
                     | k <- [0..(length wasm_args - 1)]
@@ -553,11 +553,7 @@ toMASM m = do
 
         translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
           Just (loct, as) -> typed [loct] []
-              ( concat
-                  [ [ M.LocStore a ]
-                  | a <- reverse as
-                  ]
-              )
+              ([ M.LocStore a | a <- reverse as ])
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
         translateInstr localAddrs (W.TeeLocal k) =
           (<>) <$> translateInstr localAddrs (W.SetLocal k)
