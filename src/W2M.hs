@@ -189,10 +189,14 @@ toMASM m = do
         types :: Vector W.FuncType
         types = V.fromList $ W.types m
 
+        isEmptyFun :: Function -> Bool
+        isEmptyFun fun@(DefinedFun (W.Function _ _ []))
+                = null $ W.params (functionType fun)
+        isEmptyFun _ = False
+
         emptyFunctions :: Set Int
-        emptyFunctions = Set.fromList $ V.toList $ V.findIndices emptyF allFunctions
-         where emptyF (DefinedFun (W.Function _ _ [])) = True
-               emptyF _ = False
+        emptyFunctions = Set.fromList $ V.toList $ V.findIndices isEmptyFun allFunctions
+
 
         functionType :: Function -> W.FuncType
         -- Function indices are checked by the wasm library and will always be in range.
@@ -285,7 +289,7 @@ toMASM m = do
         fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
         fun2MASM (Right idx) = case allFunctions ! idx of
             f@(ImportedFun i) -> inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
-            DefinedFun (W.Function _ _         []) -> return Nothing
+            fun | isEmptyFun fun -> return Nothing
             DefinedFun (W.Function typ localsTys body) -> inContext (InFunction idx) $ do
               let wasm_args = W.params (types ! fromIntegral typ)
                   wasm_locals = localsTys
@@ -381,10 +385,7 @@ toMASM m = do
                     if Set.member i emptyFunctions
                       then
                         -- Comment what empty function we would have called.
-                        (M.comment . M.runPPMasm $ M.ppInstr $ M.Exec $ procName (Right i)) :
-                        concat [ if t == W.I64 then [ M.Drop, M.Drop ] else [ M.Drop ]
-                                  | t <- params'
-                                  ]
+                        [M.comment . M.runPPMasm $ M.ppInstr $ M.Exec $ procName (Right i)]
                       else [M.Exec $ procName (Right i)]
               typed (reverse params') res' instrs
         translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
