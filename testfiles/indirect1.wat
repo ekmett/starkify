@@ -5,7 +5,7 @@
         (i32.mul
             (call_indirect (type 0) (local.get $fun))
             (local.get $x)
-        ) 
+        )
     )
     (func (export "main") (result i32)
         (local $fun i32)
