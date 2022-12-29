@@ -552,8 +552,7 @@ toMASM m = do
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
 
         translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
-          Just (loct, as) -> typed [loct] []
-              ([ M.LocStore a | a <- reverse as ])
+          Just (loct, as) -> typed [loct] [] (map M.LocStore $ reverse as)
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
         translateInstr localAddrs (W.TeeLocal k) =
           (<>) <$> translateInstr localAddrs (W.SetLocal k)
