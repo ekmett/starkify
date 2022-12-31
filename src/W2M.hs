@@ -103,7 +103,7 @@ toMASM m = do
         translateGlobals :: WASI.Instruction -> V [M.Instruction]
         translateGlobals (WASI.M i) = pure [i]
         translateGlobals (WASI.Load n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemLoad (Just a)]) (Map.lookup n wasiGlobalsAddrMap)
-        translateGlobals (WASI.Store n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemStore (Just a), M.Drop]) (Map.lookup n wasiGlobalsAddrMap)
+        translateGlobals (WASI.Store n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemStore (Just a)]) (Map.lookup n wasiGlobalsAddrMap)
 
         translateProc :: Either WASI.Method M.Proc -> V M.Proc
         translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
@@ -234,7 +234,6 @@ toMASM m = do
                         -- Set the branch counter.
                         [ M.Push (fromIntegral idx + 1)
                         , M.MemStore (Just branchCounter)
-                        , M.Drop
                         ]
 
         continue :: [M.Instruction] -> [M.Instruction]
@@ -243,14 +242,12 @@ toMASM m = do
           , M.Eq (Just 1)
           , M.If [ M.Push 0
                  , M.MemStore (Just branchCounter)
-                 , M.Drop
                  ] []
           , M.MemLoad (Just branchCounter)
           , M.NEq (Just 0)
           , M.If [ M.MemLoad (Just branchCounter)
                  , M.Sub (Just 1)
                  , M.MemStore (Just branchCounter)
-                 , M.Drop
                  ]
                  is
           ]
@@ -310,7 +307,7 @@ toMASM m = do
                   -- being pushed last and therefore popped first.
                   prelude = reverse $ concat
                     [ case Map.lookup (fromIntegral k) localAddrMap of
-                        Just (_t, is) -> concat [ [ M.Drop, M.LocStore i ] | i <- is ]
+                        Just (_t, is) -> map M.LocStore is
                         -- TODO: Add back function name to error.
                         _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
                     | k <- [0..(length wasm_args - 1)]
@@ -345,7 +342,6 @@ toMASM m = do
                   , M.Dup 0
                   , M.If [ M.Push 0
                          , M.MemStore (Just branchCounter)
-                         , M.Drop
                          ] []
                   ]
         translateInstrs a (i@(W.If t tb fb):is) k = do
@@ -416,7 +412,6 @@ toMASM m = do
                    , M.Push memBeginning
                    , M.IAdd
                    , M.MemStore Nothing
-                   , M.Drop
                    ]
         translateInstr _ (W.I32Load8U (W.MemArg offset _align)) =
             typed [W.I32] [W.I32]
@@ -496,8 +491,7 @@ toMASM m = do
                    , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
                    , M.IOr                        -- [final_val, memBeginning+q, ...]
                    , M.Swap 1                     -- [memBeginning+q, final_val, ...]
-                   , M.MemStore Nothing           -- [final_val, ...]
-                   , M.Drop                       -- [...]
+                   , M.MemStore Nothing           -- [...]
                    ]
         translateInstr _ (W.I32Load16U (W.MemArg offset _align)) = typed [W.I32] [W.I32]
                    [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
@@ -550,8 +544,7 @@ toMASM m = do
                    , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
                    , M.IOr                        -- [final_val, memBeginning+q, ...]
                    , M.Swap 1                     -- [memBeginning+q, final_val, ...]
-                   , M.MemStore Nothing           -- [final_val, ...]
-                   , M.Drop                       -- [...]
+                   , M.MemStore Nothing           -- [...]
                    ]
         -- locals
         translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
@@ -559,14 +552,7 @@ toMASM m = do
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
 
         translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
-          Just (loct, as) -> typed [loct] []
-              ( concat
-                  [ [ M.LocStore a
-                    , M.Drop
-                    ]
-                  | a <- reverse as
-                  ]
-              )
+          Just (loct, as) -> typed [loct] [] (map M.LocStore $ reverse as)
           _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
         translateInstr localAddrs (W.TeeLocal k) =
           (<>) <$> translateInstr localAddrs (W.SetLocal k)
@@ -583,14 +569,10 @@ toMASM m = do
           t -> error $ "unsupported type: " ++ show t
         translateInstr _ (W.SetGlobal k) = case getGlobalTy k of
           W.I32 -> typed [W.I32] []
-              [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k
-              , M.Drop
-              ]
+              [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k ]
           W.I64 -> typed [W.I64] []
               [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
-              , M.Drop
               , M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k)
-              , M.Drop
               ]
           t -> error $ "unsupported type: " ++ show t
 
@@ -639,10 +621,8 @@ toMASM m = do
               , M.Dup 0 -- [addr, addr, hi, lo, ...]
               , M.Swap 2, M.Swap 1 -- [addr, hi, addr, lo, ...]
               , M.Push 1, M.IAdd -- [addr+1, hi, addr, lo, ...]
-              , M.MemStore Nothing -- [hi, addr, lo, ...]
-              , M.Drop -- [addr, lo, ...]
-              , M.MemStore Nothing -- [lo, ...]
-              , M.Drop -- [...]
+              , M.MemStore Nothing -- [addr, lo, ...]
+              , M.MemStore Nothing -- [...]
               ]
         translateInstr _ (W.I64Store8 (W.MemArg offset _align)) =
           -- we have an 8-bit value stored in an i64 (two 32 bits in Miden land),
@@ -689,9 +669,9 @@ toMASM m = do
                    , M.IOr64                      -- [res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
                    , M.Dup 5                      -- [memBeginning+q, res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
                    , M.Push 1, M.IAdd             -- [memBeginning+q+1, res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
-                   , M.MemStore Nothing, M.Drop   -- [res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
+                   , M.MemStore Nothing           -- [res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
                    , M.MoveUp 4                   -- [memBeginning+q, res_lo, mask_hi, mask_lo, 8*r, ...]
-                   , M.MemStore Nothing, M.Drop   -- [mask_hi, mask_lo, 8*r, ...]
+                   , M.MemStore Nothing           -- [mask_hi, mask_lo, 8*r, ...]
                    , M.Drop, M.Drop, M.Drop       -- [...]
                    ]
         -- TODO: ^^^^^^ use M.MoveUp more!
@@ -1090,8 +1070,7 @@ writeW32s (a:b:c:d:xs) =
   in [ M.Dup 0 -- [addr_u32, addr_u32, ...]
       , M.Push w -- [w, addr_u32, addr_u32, ...]
       , M.Swap 1 -- [addr_u32, w, addr_u32, ...]
-      , M.MemStore Nothing -- [w, addr_u32, ...]
-      , M.Drop -- [addr_u32, ...]
+      , M.MemStore Nothing -- [addr_u32, ...]
       , M.Push 1, M.IAdd -- [addr_u32+1, ...]
       ] ++ writeW32s xs
 writeW32s xs = writeW32s $ xs ++ replicate (4-length xs) 0
