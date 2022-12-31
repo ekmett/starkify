@@ -491,7 +491,7 @@ toMASM m = do
                    , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
                    , M.IOr                        -- [final_val, memBeginning+q, ...]
                    , M.Swap 1                     -- [memBeginning+q, final_val, ...]
-                   , M.MemStore Nothing           -- [final_val, ...]
+                   , M.MemStore Nothing           -- [...]
                    ]
         translateInstr _ (W.I32Load16U (W.MemArg offset _align)) = typed [W.I32] [W.I32]
                    [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
@@ -544,7 +544,7 @@ toMASM m = do
                    , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
                    , M.IOr                        -- [final_val, memBeginning+q, ...]
                    , M.Swap 1                     -- [memBeginning+q, final_val, ...]
-                   , M.MemStore Nothing           -- [final_val, ...]
+                   , M.MemStore Nothing           -- [...]
                    ]
         -- locals
         translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
@@ -621,8 +621,8 @@ toMASM m = do
               , M.Dup 0 -- [addr, addr, hi, lo, ...]
               , M.Swap 2, M.Swap 1 -- [addr, hi, addr, lo, ...]
               , M.Push 1, M.IAdd -- [addr+1, hi, addr, lo, ...]
-              , M.MemStore Nothing -- [hi, addr, lo, ...]
-              , M.MemStore Nothing -- [lo, ...]
+              , M.MemStore Nothing -- [addr, lo, ...]
+              , M.MemStore Nothing -- [...]
               ]
         translateInstr _ (W.I64Store8 (W.MemArg offset _align)) =
           -- we have an 8-bit value stored in an i64 (two 32 bits in Miden land),
@@ -1070,7 +1070,7 @@ writeW32s (a:b:c:d:xs) =
   in [ M.Dup 0 -- [addr_u32, addr_u32, ...]
       , M.Push w -- [w, addr_u32, addr_u32, ...]
       , M.Swap 1 -- [addr_u32, w, addr_u32, ...]
-      , M.MemStore Nothing -- [w, addr_u32, ...]
+      , M.MemStore Nothing -- [addr_u32, ...]
       , M.Push 1, M.IAdd -- [addr_u32+1, ...]
       ] ++ writeW32s xs
 writeW32s xs = writeW32s $ xs ++ replicate (4-length xs) 0
