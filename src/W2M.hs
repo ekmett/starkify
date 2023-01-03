@@ -369,6 +369,7 @@ toMASM m = do
                   br' <- brTable (j+1) idxs
                   pure [M.Dup 0, M.Eq (Just j), M.If (M.Drop : br) br']
         translateInstrs _ (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
+        translateInstrs a (W.Nop:is) k = translateInstrs a is k
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
         translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
@@ -792,7 +793,21 @@ translateIBinOp W.BS64 op = case op of
       ]
     )
   W.IRemU -> stackBinop W.I64 M.IMod64
-  _       -> unsupported64Bits op
+  W.IRemS -> do -- [b_hi, b_lo, a_hi, a_lo, ...] and we want a `rem` b
+    dups <- typed [W.I64, W.I64] [W.I64, W.I64, W.I64, W.I64]
+      (computeDup64 2 ++ computeDup64 2) -- [b_hi, b_lo, a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
+    divRes <- translateIBinOp W.BS64 W.IDivS -- [q_hi, q_lo, b_hi, b_lo, a_hi, a_lo, ...]
+    remRes <- typed [W.I64, W.I64, W.I64] [W.I64] $
+      [ M.IMul64 -- [ (b*q)_hi, (b*q)_lo, a_hi, a_lo, ...]
+      , M.ISub64 -- [ (a - b*q)_hi, (a - b*q)_lo, ...]
+      ]
+    return (dups ++ divRes ++ remRes)
+
+  -- in both of these, the number of bits by which we "rotate" needs to be a 64 bits integer for wasm
+  -- even though it's surely safe to assume we won't get arguments that don't fit in an 32 bits integer.
+  -- but since Miden wants a 32 bits argument there we just drop the high limb of the 64 bits integer.
+  W.IRotl -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IRotl64]
+  W.IRotr -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IRotr64]
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop W.I32 M.IAdd
   W.ISub  -> stackBinop W.I32 M.ISub
@@ -821,6 +836,14 @@ translateIBinOp W.BS32 op = case op of
           []                       -- [abs(a)/abs(b), ...]
       ]
     )
+  W.IRemS -> do -- [b, a, ...] and we want a `rem` b
+    dups <- typed [W.I32, W.I32] [W.I32, W.I32, W.I32, W.I32] [M.Dup 1, M.Dup 1] -- [b, a, b, a, ...]
+    divRes <- translateIBinOp W.BS32 W.IDivS -- [q, b, a, ...]
+    remRes <- typed [W.I32, W.I32, W.I32] [W.I32] $
+      [ M.IMul -- [ b*q, a, ...]
+      , M.ISub -- [ a - b*q, ...]
+      ]
+    return (dups ++ divRes ++ remRes)
   W.IShrS -> typed [W.I32, W.I32] [W.I32] -- [b, a, ...]
     ( [ M.Dup 1                  -- [a, b, a, ...]
       ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
@@ -833,7 +856,8 @@ translateIBinOp W.BS32 op = case op of
           [ M.IShR ]            -- [ a >> b, ...]
       ]
     )
-  _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
+  W.IRotl -> stackBinop W.I32 M.IRotl
+  W.IRotr -> stackBinop W.I32 M.IRotr
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V [M.Instruction]
 translateIRelOp W.BS64 op = case op of

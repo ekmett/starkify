@@ -33,8 +33,11 @@ data Expr t where
     Sub      :: Expr a -> Expr a -> Expr a
     Mul      :: Expr a -> Expr a -> Expr a
     Div      :: Expr a -> Expr a -> Expr a
+    Rem      :: Expr a -> Expr a -> Expr a
     Shl      :: Expr a -> Int    -> Expr a
     Shr      :: Expr a -> Int    -> Expr a
+    Rotl     :: Expr a -> Int    -> Expr a
+    Rotr     :: Expr a -> Int    -> Expr a
 
 instance Show (Expr t) where
   show e = case e of
@@ -46,8 +49,11 @@ instance Show (Expr t) where
     Sub a b    -> "(" ++ show a ++ " - " ++ show b ++ ")"
     Mul a b    -> "(" ++ show a ++ " * " ++ show b ++ ")"
     Div a b    -> "(" ++ show a ++ " / " ++ show b ++ ")"
+    Rem a b    -> "(" ++ show a ++ " % " ++ show b ++ ")"
     Shl a n    -> "(" ++ show a ++ " << " ++ show n ++ ")"
     Shr a n    -> "(" ++ show a ++ " >> " ++ show n ++ ")"
+    Rotl a n   -> "rotl(" ++ show a ++ ", " ++ show n ++ ")"
+    Rotr a n   -> "rotr(" ++ show a ++ ", " ++ show n ++ ")"
 
 exprToWasm :: Typed t => Expr t -> W.Module
 exprToWasm expr = W.Module
@@ -102,6 +108,14 @@ exprToWasm expr = W.Module
                          I64 -> W.IBinOp W.BS64 W.IDivS
                   xs = [op]
               in exprWasm a ++ exprWasm b ++ xs
+            Rem a b    ->
+              let op = case typeOf a of
+                         W32 -> W.IBinOp W.BS32 W.IRemU
+                         I32 -> W.IBinOp W.BS32 W.IRemS
+                         W64 -> W.IBinOp W.BS64 W.IRemU
+                         I64 -> W.IBinOp W.BS64 W.IRemS
+                  xs = [op]
+              in exprWasm a ++ exprWasm b ++ xs
             Shr a n    ->
               let (k, op) = case typeOf a of
                          W32 -> (W.I32Const (fromIntegral n), W.IBinOp W.BS32 W.IShrU)
@@ -118,6 +132,22 @@ exprToWasm expr = W.Module
                          I64 -> (W.I64Const (fromIntegral n), W.IBinOp W.BS64 W.IShl)
                   xs = [k, op]
               in exprWasm a ++ xs
+            Rotl a n   ->
+              let (k, op) = case typeOf a of
+                         W32 -> (W.I32Const (fromIntegral n), W.IBinOp W.BS32 W.IRotl)
+                         I32 -> (W.I32Const (fromIntegral n), W.IBinOp W.BS32 W.IRotl)
+                         W64 -> (W.I64Const (fromIntegral n), W.IBinOp W.BS64 W.IRotl)
+                         I64 -> (W.I64Const (fromIntegral n), W.IBinOp W.BS64 W.IRotl)
+                  xs = [k, op]
+              in exprWasm a ++ xs
+            Rotr a n   ->
+              let (k, op) = case typeOf a of
+                         W32 -> (W.I32Const (fromIntegral n), W.IBinOp W.BS32 W.IRotr)
+                         I32 -> (W.I32Const (fromIntegral n), W.IBinOp W.BS32 W.IRotr)
+                         W64 -> (W.I64Const (fromIntegral n), W.IBinOp W.BS64 W.IRotr)
+                         I64 -> (W.I64Const (fromIntegral n), W.IBinOp W.BS64 W.IRotr)
+                  xs = [k, op]
+              in exprWasm a ++ xs
 
 randomExpr :: forall a. (Arbitrary a, Num a, Eq a) => (a -> Expr a) -> Int -> Gen (Expr a)
 randomExpr konst 0 = konst <$> arbitrary
@@ -127,8 +157,11 @@ randomExpr konst k = frequency
   , (7, Sub <$> randomExpr konst (k-1) <*> randomExpr konst (k-1))
   , (5, Mul <$> randomExpr konst (k-1) <*> randomExpr konst (k-1))
   , (4, Div <$> randomExpr konst (k-1) <*> (konst . getNonZero <$> arbitrary))
+  , (3, Rem <$> randomExpr konst (k-1) <*> (konst . getNonZero <$> arbitrary))
   , (3, Shl <$> randomExpr konst (k-1) <*> chooseInt (1, 31))
-  , (2, Shr <$> randomExpr konst (k-1) <*> chooseInt (1, 31))
+  , (3, Shr <$> randomExpr konst (k-1) <*> chooseInt (1, 31))
+  , (2, Rotl <$> randomExpr konst (k-1) <*> chooseInt (1, 31))
+  , (2, Rotr <$> randomExpr konst (k-1) <*> chooseInt (1, 31))
   ]
 
 logSize :: Integral a => a -> a
