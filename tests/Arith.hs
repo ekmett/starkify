@@ -73,7 +73,7 @@ instance Typed Word32 where
     fromWStack s = case s of
       W.VI32 w : _ -> Just w
       _            -> Nothing
-    wasmPush w = W.I32Const w
+    wasmPush = W.I32Const
     bitsize _ = W.BS32
     isSignedTy _ = False
 instance Typed Int32 where
@@ -90,7 +90,7 @@ instance Typed Word64 where
     fromWStack s = case s of
       W.VI64 w : _ -> Just w
       _            -> Nothing
-    wasmPush w = W.I64Const w
+    wasmPush = W.I64Const
     bitsize _ = W.BS64
     isSignedTy _ = False
 instance Typed Int64 where
@@ -285,7 +285,7 @@ cmpTest cmp@(Cmp x y cmpop) = ioProperty $ do
   Just reference <- fromWStack @Word32 <$> Miden.simulateWASM wmod
   when debug $
     putStrLn $ "result = " ++ show reference ++ " (" ++
-               show (if reference == 1 then True else False) ++ ")"
+               show (reference == 1) ++ ")"
   when debug $ T.putStrLn (pShow wmod)
   mres <- runValidation (toMASM wmod) >>= \mmod -> do
     when debug $ T.putStrLn (pShow mmod)
