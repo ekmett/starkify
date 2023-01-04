@@ -19,7 +19,6 @@ library
     MASM.Miden,
     Validation,
     W2M,
-    Tools,
     WASI,
     WASM.WasmTime
   hs-source-dirs:     src

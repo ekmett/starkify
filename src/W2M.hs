@@ -14,7 +14,9 @@ import Data.Bits
 import Data.ByteString.Lazy qualified as BS
 import Data.Char (isAsciiLower)
 import Data.Containers.ListUtils (nubOrd)
+import Data.Either (rights)
 import Data.Foldable
+import Data.Graph qualified as Graph
 import Data.List (stripPrefix, sortOn)
 import Data.Map (Map)
 import Data.Map qualified as Map
@@ -31,7 +33,6 @@ import Language.Wasm.Structure qualified as W
 
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
-import Tools (dfs)
 import Validation
 import WASI qualified
 import GHC.Stack (HasCallStack)
@@ -109,23 +110,25 @@ toMASM m = do
         translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
         translateProc (Right p) = pure p
 
-        callGraph :: Map (Either PrimFun Int) (Set (Either PrimFun Int))
-        callGraph = Map.fromListWith (<>) $
-          [ (Right caller, Set.singleton (Right $ fromIntegral callee))
+        calls :: [Graph.Edge]
+        calls =
+          [ (caller, callee)
           | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
-          , W.Call callee <- body
+          , callee <- allCalls body
           ] ++
-          [ ( Left starkifyCallIndirectName
-            , Set.fromList [ Right (fromIntegral f)
-                           | W.ElemSegment _ _ fs <- W.elems m
-                           , f <- fs
-                           ]
-            )
-          ] ++
-          [ (Right f, Set.singleton (Left starkifyCallIndirectName))
-          | (f, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
-          , W.CallIndirect _ <- body
+          [ (fnCallIndirectIdx, fromIntegral f)
+          | W.ElemSegment _ _ fs <- W.elems m
+          , f <- fs
           ]
+          where fnCallIndirectIdx = V.length allFunctions
+                allCalls :: W.Expression -> [Int]
+                allCalls (W.Call f:is) = fromIntegral f : allCalls is
+                allCalls (W.CallIndirect _:is) = fnCallIndirectIdx : allCalls is
+                allCalls (W.Block _ b:is) = allCalls b <> allCalls is
+                allCalls (W.Loop _ b:is) = allCalls b <> allCalls is
+                allCalls (W.If _ t f:is) = allCalls t <> allCalls f <> allCalls is
+                allCalls (_:is) = allCalls is
+                allCalls _ = []
 
         -- Each compiler has a different convention for exporting the main function, and the
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
@@ -151,7 +154,10 @@ toMASM m = do
 
         -- Miden requires procedures to be defined before any execs that reference them.
         sortedFunctions :: [Either PrimFun Int]
-        sortedFunctions = reverse $ nubOrd $ concatMap (`dfs` callGraph) entryFunctions
+        sortedFunctions = fType <$> filter (`elem` reachable) (Graph.reverseTopSort callGraph)
+          where callGraph = Graph.buildG (0, length allFunctions) calls
+                reachable = concatMap (Graph.reachable callGraph) (rights entryFunctions)
+                fType i = if i == length allFunctions then Left starkifyCallIndirectName else Right i
 
         getDatasInit :: V [M.Instruction]
         getDatasInit = concat <$> traverse getDataInit (W.datas m)
