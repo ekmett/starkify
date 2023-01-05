@@ -720,11 +720,26 @@ toMASM m = do
 
 translateIUnOp :: W.BitSize -> W.IUnOp -> V [M.Instruction]
 translateIUnOp W.BS32 op = case op of
-  W.IPopcnt -> typed [W.I32] [W.I32]
-    [ M.Dup 0, M.Push 1, M.IShR, M.Push 0x55555555, M.IAnd, M.ISub
-    , M.Dup 0, M.Push 2, M.IShR, M.Push 0x33333333, M.IAnd, M.Swap 1, M.Push 0x33333333, M.IAnd, M.IAdd
-    , M.Dup 0, M.Push 4, M.IShR, M.IAdd, M.Push 0x0F0F0F0F, M.IAnd
-    , M.Push 0x01010101, M.IMul, M.Push 24, M.IShR
+  W.IPopcnt -> typed [W.I32] [W.I32] -- [a, ...]
+    [ M.Dup 0                        -- [a, a, ...]
+    , M.Push 1, M.IShR               -- [a >> 1, a, ...]
+    , M.Push 0x55555555 , M.IAnd     -- [(a >> 1) & 0x55555555, a, ...]
+    , M.ISub                         -- [b, ...] = [a - ((a >> 1) & 0x55555555), ...]
+
+    , M.Dup 0                        -- [b, b, ...]
+    , M.Push 2, M.IShR               -- [b >> 2, b, ...]
+    , M.Push 0x33333333, M.IAnd      -- [(b >> 2) & 0x33333333, b, ...]
+    , M.Swap 1                       -- [b, (b >> 2) & 0x33333333, ...]
+    , M.Push 0x33333333, M.IAnd      -- [b & 0x33333333, (b >> 2) & 0x33333333, ...]
+    , M.IAdd                         -- [c, ...] = [(b & 0x33333333) + ((b >> 2) & 0x33333333), ...]
+
+    , M.Dup 0                        -- [c, c, ...]
+    , M.Push 4, M.IShR               -- [c >> 4, c, ...]
+    , M.IAdd                         -- [c + (c >> 4), ...]
+    , M.Push 0x0F0F0F0F, M.IAnd      -- [d, ...] == [(c + (c >> 4)) & 0x0F0F0F0F, ...]
+
+    , M.Push 0x01010101, M.IMul      -- [d * 0x01010101, ...]
+    , M.Push 24, M.IShR              -- [(d * 0x01010101) >> 24, ...]
     ]
   _         -> unsupportedInstruction (W.IUnOp W.BS32 op)
 
