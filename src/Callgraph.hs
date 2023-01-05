@@ -58,6 +58,7 @@ getSortedFunctions allFunctions entryFunctions elems =
   fmap (sel2 . v2node)
     . nubOrd
     . reverse
+    -- Note(Matthias): `Graph.reachable` does a topological sort.
     . Graph.reachable callGraph
     =<< mapMaybe k2v entryFunctions
   where
