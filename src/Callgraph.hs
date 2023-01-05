@@ -1,20 +1,21 @@
 module Callgraph where
 
-import Data.Bifunctor (bimap)
+import Control.Monad
+import Data.Containers.ListUtils (nubOrd)
 import Data.Functor ((<&>))
-import Data.Map (Map)
-import Data.Map qualified as Map
-import Data.Set (Set)
-import Data.Set qualified as Set
+import Data.Graph qualified as Graph
+import Data.Maybe ( mapMaybe )
 import Data.Vector qualified as V
 import GHC.Natural (Natural)
 import Language.Wasm.Structure
-    ( Function(body),
-      Instruction(false, body, true),
-      ElemSegment(funcIndexes) )
+  ( ElemSegment (funcIndexes),
+    Instruction (body, false, true),
+  )
 import Language.Wasm.Structure qualified as W
 import W2M.Common
 import Prelude hiding (putStrLn, unwords, words)
+
+type GraphFun = Either PrimFun Int
 
 findCalls :: Instruction Natural -> [GraphFun]
 findCalls = \case
@@ -25,29 +26,40 @@ findCalls = \case
   W.CallIndirect {} -> pure $ Left starkifyCallIndirectName
   _ -> mempty
 
-type GraphFun = Either PrimFun Int
-
--- TODO: take code in data segment's offset and elem segment's offset etc into account?
-callGraph ::
-  [W.ElemSegment] ->
-  V.Vector W2M.Common.Function ->
-  Map
-    GraphFun
-    (Set GraphFun)
-callGraph elems allFunctions =
-  Set.fromList <$> Map.fromListWith (<>) (fromFuns <> fromElems)
-  where
-    fromFuns, fromElems :: [(GraphFun, [GraphFun])]
-    fromFuns =
-      V.toList $
-        V.indexed allFunctions <&> bimap Right \case
-          DefinedFun (W.Function {body}) -> findCalls =<< body
-          _ -> []
-    fromElems =
-      [ ( Left starkifyCallIndirectName,
-          [ Right (fromIntegral f)
-            | W.ElemSegment {funcIndexes} <- elems,
-              f <- funcIndexes
-          ]
-        )
+indirectCalls :: [ElemSegment] -> [(GraphFun, [GraphFun])]
+indirectCalls elems =
+  [ ( Left starkifyCallIndirectName,
+      [ Right $ fromIntegral f
+        | W.ElemSegment {funcIndexes} <- elems,
+          f <- funcIndexes
       ]
+    )
+  ]
+
+directCalls :: V.Vector Function -> [(GraphFun, [GraphFun])]
+directCalls allFunctions =
+  [ (Right caller, findCalls =<< body)
+    | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
+  ]
+
+allCalls :: V.Vector Function -> [ElemSegment] -> [((), GraphFun, [GraphFun])]
+allCalls allFunctions elems =
+  directCalls allFunctions ++ indirectCalls elems <&> \(s, t) ->
+    ((), s, t)
+
+getSortedFunctions ::
+  V.Vector Function ->
+  [GraphFun] ->
+  [ElemSegment] ->
+  [GraphFun]
+getSortedFunctions allFunctions entryFunctions elems =
+  fmap (_2 . v2node)
+    . nubOrd
+    . reverse
+    . Graph.reachable callGraph
+    =<< mapMaybe k2v entryFunctions
+  where
+    (callGraph, v2node, k2v) = Graph.graphFromEdges $ allCalls allFunctions elems
+
+_2 :: (a, b, c) -> b
+_2 (_, b, _) = b
