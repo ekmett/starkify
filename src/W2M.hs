@@ -146,10 +146,10 @@ toMASM m = do
         getDataInit _ = badNoMultipleMem
 
         getGlobalsInit :: V [M.Instruction]
-        getGlobalsInit = concat <$> traverse getGlobalInit (zip [0..] (W.globals m))
+        getGlobalsInit = concat <$> zipWithM getGlobalInit [0..] (W.globals m)
 
-        getGlobalInit :: (Int, W.Global) -> V [M.Instruction]
-        getGlobalInit (k, g) =
+        getGlobalInit :: Int -> W.Global -> V [M.Instruction]
+        getGlobalInit k g =
           translateInstrs mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k]) 0
 
         getGlobalTy k = globalTypeToValue . W.globalType $ W.globals m !! fromIntegral k
@@ -795,7 +795,7 @@ translateIRelOp W.BS64 op = case op of
   W.IGtU -> stackRelop W.I64 M.IGt64
   W.ILeU -> stackRelop W.I64 M.ILte64
   W.IGeU -> stackRelop W.I64 M.IGte64
-  W.ILtS -> typed [W.I64, W.I64] [W.I32] $      -- [b_hi, b_lo, a_hi, a_lo, ...]
+  W.ILtS -> typed [W.I64, W.I64] [W.I32]        -- [b_hi, b_lo, a_hi, a_lo, ...]
     ( [ M.Dup 3, M.Dup 3                        -- [a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
       ] ++ computeIsNegative64 ++               -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
       [ M.Dup 2, M.Dup 2                        -- [b_hi, b_lo, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
@@ -821,7 +821,7 @@ translateIRelOp W.BS64 op = case op of
           ]
       ]
     )
-  W.IGtS -> typed [W.I64, W.I64] [W.I32] $      -- [b_hi, b_lo, a_hi, a_lo, ...]
+  W.IGtS -> typed [W.I64, W.I64] [W.I32]        -- [b_hi, b_lo, a_hi, a_lo, ...]
     ( [ M.Dup 3, M.Dup 3                        -- [a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
       ] ++ computeIsNegative64 ++               -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
       [ M.Dup 2, M.Dup 2                        -- [b_hi, b_lo, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
@@ -872,7 +872,7 @@ translateIRelOp W.BS32 op = case op of
   W.IGtU -> stackRelop W.I32 M.IGt
   W.ILeU -> stackRelop W.I32 M.ILte
   W.IGeU -> stackRelop W.I32 M.IGte
-  W.ILtS -> typed [W.I32, W.I32] [W.I32] $      -- [b, a, ...]
+  W.ILtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
     ( [ M.Dup 1
       ] ++ computeIsNegative ++                 -- [a_neg, b, a, ...]
       [ M.Dup 1
@@ -896,7 +896,7 @@ translateIRelOp W.BS32 op = case op of
           ]
       ]
     )
-  W.IGtS -> typed [W.I32, W.I32] [W.I32] $      -- [b, a, ...]
+  W.IGtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
     ( [ M.Dup 1
       ] ++ computeIsNegative ++                 -- [a_neg, b, a, ...]
       [ M.Dup 1
