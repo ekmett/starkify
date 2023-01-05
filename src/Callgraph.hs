@@ -43,6 +43,7 @@ directCalls allFunctions =
     | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
   ]
 
+-- TODO: take code in data segment's offset and elem segment's offset etc into account?
 allCalls :: V.Vector Function -> [ElemSegment] -> [((), GraphFun, [GraphFun])]
 allCalls allFunctions elems =
   directCalls allFunctions ++ indirectCalls elems <&> \(s, t) ->
