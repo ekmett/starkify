@@ -11,7 +11,7 @@ import Data.Word
 import GHC.Generics
 import Language.Wasm qualified as Wasm
 import MASM (ppMASM, Module)
-import MASM.Miden (runMidenVerify, runMiden)
+import MASM.Miden (runMidenVerify, runMiden, KeepFile (..))
 import Options
 import System.Exit
 import System.FilePath
@@ -145,7 +145,7 @@ runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp 
                }
    case runInterp (interpret masmMod) of
      Right (stack, mem) -> do
-       midenStack <- either (\e -> error $ "Miden error: " ++ show e) id <$> runMiden masmMod
+       midenStack <- either (\e -> error $ "Miden error: " ++ show e) id <$> runMiden DontKeep masmMod
        dumps2 ("Interpreter output (" ++ interpInFile ++ ")")
               ([ "Stack: " ++ show stack
                , "       " ++ "(length = " ++ show (length stack) ++ ")"
