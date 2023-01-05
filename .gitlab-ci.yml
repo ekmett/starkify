@@ -15,6 +15,7 @@ testfiles:
   tags:
     - nixos-starkify-runner
   script:
+    - nix-shell --run "cabal build --enable-tests"
     - nix-shell --run "cabal test"
     - nix-shell --run "cabal run testfiles"
 
