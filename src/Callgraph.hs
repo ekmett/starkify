@@ -5,6 +5,7 @@ import Data.Containers.ListUtils (nubOrd)
 import Data.Functor ((<&>))
 import Data.Graph qualified as Graph
 import Data.Maybe ( mapMaybe )
+import Data.Tuple.Select (sel2)
 import Data.Vector qualified as V
 import GHC.Natural (Natural)
 import Language.Wasm.Structure
@@ -53,13 +54,10 @@ getSortedFunctions ::
   [ElemSegment] ->
   [GraphFun]
 getSortedFunctions allFunctions entryFunctions elems =
-  fmap (_2 . v2node)
+  fmap (sel2 . v2node)
     . nubOrd
     . reverse
     . Graph.reachable callGraph
     =<< mapMaybe k2v entryFunctions
   where
     (callGraph, v2node, k2v) = Graph.graphFromEdges $ allCalls allFunctions elems
-
-_2 :: (a, b, c) -> b
-_2 (_, b, _) = b

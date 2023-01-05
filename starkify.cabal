@@ -36,6 +36,7 @@ library
                       wasm,
                       pretty-simple,
                       dlist,
+                      tuple,
                       monad-validate
   ghc-options:        -Wall
   default-language:   Haskell2010
