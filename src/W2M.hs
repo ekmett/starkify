@@ -717,8 +717,10 @@ toMASM m = do
         -- in miden, going from [v_hi, v_lo, ...] to [v_lo, ...]
         translateInstr _ W.I32WrapI64 = typed [W.I64] [W.I32] [M.Drop]
         -- this is a sign-aware extension, so we push 0 or maxBound :: Word32
-        -- depending on whether the most significant bit of the i32 is 0 or 1.
+        -- depending on whether the 32 bits number is negative or not.
         translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64] $
+            -- TODO: investigate performance of computing both branches and using select.
+            --       Miden docs suggest it might be faster.
             [ M.Dup 0                  -- [x, x, ...]
             ] ++ computeIsNegative ++  -- [x_negative, x, ...]
             [ M.If
