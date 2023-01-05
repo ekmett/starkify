@@ -31,7 +31,6 @@ import Language.Wasm.Structure qualified as W
 
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
-import Tools (dfs)
 import Validation
 import WASI qualified
 import GHC.Stack (HasCallStack)
@@ -129,7 +128,7 @@ toMASM m = do
 
         -- Miden requires procedures to be defined before any execs that reference them.
         sortedFunctions :: [Either PrimFun Int]
-        sortedFunctions = reverse $ nubOrd $ concatMap (`dfs` callGraph (W.elems m) allFunctions) entryFunctions
+        sortedFunctions = sortedFunctions' allFunctions entryFunctions (W.elems m)
 
         getDatasInit :: V [M.Instruction]
         getDatasInit = concat <$> traverse getDataInit (W.datas m)

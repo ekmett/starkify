@@ -21,7 +21,6 @@ library
     Validation,
     W2M,
     W2M.Common,
-    Tools,
     WASI,
     WASM.WasmTime
   hs-source-dirs:     src
