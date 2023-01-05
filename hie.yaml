@@ -1,10 +1,10 @@
 cradle:
   cabal:
-    - path: "app/"
-      component: "starkify:exe:starkify"
     - path: "src/"
       component: "starkify:lib:starkify"
+    - path: "app/"
+      component: "starkify:exe:starkify"
     - path: "tests/TestFiles.hs"
       component: "starkify:test:testfiles"
-    - path: "tests/Arith.hs"
-      component: "starkify:test:arith-test"
+    - path: "tests/Properties.hs"
+      component: "starkify:test:properties"
