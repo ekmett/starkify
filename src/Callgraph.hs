@@ -16,9 +16,9 @@ import Language.Wasm.Structure qualified as W
 import W2M.Common
 import Prelude hiding (putStrLn, unwords, words)
 
-type GraphFun = Either PrimFun Int
+type FunVertex = Either PrimFun Int
 
-findCalls :: Instruction Natural -> [GraphFun]
+findCalls :: Instruction Natural -> [FunVertex]
 findCalls = \case
   W.Block {body} -> findCalls =<< body
   W.Loop {body} -> findCalls =<< body
@@ -27,7 +27,7 @@ findCalls = \case
   W.CallIndirect {} -> pure $ Left starkifyCallIndirectName
   _ -> mempty
 
-indirectCalls :: [ElemSegment] -> [(GraphFun, [GraphFun])]
+indirectCalls :: [ElemSegment] -> [(FunVertex, [FunVertex])]
 indirectCalls elems =
   [ ( Left starkifyCallIndirectName,
       [ Right $ fromIntegral f
@@ -37,23 +37,23 @@ indirectCalls elems =
     )
   ]
 
-directCalls :: V.Vector Function -> [(GraphFun, [GraphFun])]
+directCalls :: V.Vector Function -> [(FunVertex, [FunVertex])]
 directCalls allFunctions =
   [ (Right caller, findCalls =<< body)
     | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
   ]
 
 -- TODO: take code in data segment's offset and elem segment's offset etc into account?
-allCalls :: V.Vector Function -> [ElemSegment] -> [((), GraphFun, [GraphFun])]
+allCalls :: V.Vector Function -> [ElemSegment] -> [((), FunVertex, [FunVertex])]
 allCalls allFunctions elems =
   directCalls allFunctions ++ indirectCalls elems <&> \(s, t) ->
     ((), s, t)
 
 getSortedFunctions ::
   V.Vector Function ->
-  [GraphFun] ->
+  [FunVertex] ->
   [ElemSegment] ->
-  [GraphFun]
+  [FunVertex]
 getSortedFunctions allFunctions entryFunctions elems =
   fmap (sel2 . v2node)
     . nubOrd

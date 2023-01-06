@@ -108,7 +108,7 @@ toMASM m = do
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
         -- currently pass input to the main function, we can proceed if either is present (and we
         -- should use both if both are present).
-        entryFunctions :: [GraphFun]
+        entryFunctions :: [FunVertex]
         entryFunctions = Right . fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
 
         -- An export with an empty string is considered to be a "default export".
