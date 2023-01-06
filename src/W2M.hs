@@ -31,17 +31,12 @@ import Language.Wasm.Structure qualified as W
 
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
-import Tools (dfs)
 import Validation
 import WASI qualified
 import GHC.Stack (HasCallStack)
 
-type WasmAddr = Natural
-type MasmAddr = Word32
-type LocalAddrs = Map WasmAddr (W.ValueType, [MasmAddr])
-type FunName = Text
-type PrimFun = FunName
-data Function = ImportedFun W.Import | StarkifyFun FunName | DefinedFun W.Function
+import W2M.Common
+import Callgraph
 
 -- Note: Wasm modules may fail to compile if they contain > 2^29 functions.
 
@@ -109,28 +104,11 @@ toMASM m = do
         translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
         translateProc (Right p) = pure p
 
-        callGraph :: Map (Either PrimFun Int) (Set (Either PrimFun Int))
-        callGraph = Map.fromListWith (<>) $
-          [ (Right caller, Set.singleton (Right $ fromIntegral callee))
-          | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
-          , W.Call callee <- body
-          ] ++
-          [ ( Left starkifyCallIndirectName
-            , Set.fromList [ Right (fromIntegral f)
-                           | W.ElemSegment _ _ fs <- W.elems m
-                           , f <- fs
-                           ]
-            )
-          ] ++
-          [ (Right f, Set.singleton (Left starkifyCallIndirectName))
-          | (f, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
-          , W.CallIndirect _ <- body
-          ]
-
         -- Each compiler has a different convention for exporting the main function, and the
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
         -- currently pass input to the main function, we can proceed if either is present (and we
         -- should use both if both are present).
+        entryFunctions :: [FunVertex]
         entryFunctions = Right . fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
 
         -- An export with an empty string is considered to be a "default export".
@@ -151,7 +129,7 @@ toMASM m = do
 
         -- Miden requires procedures to be defined before any execs that reference them.
         sortedFunctions :: [Either PrimFun Int]
-        sortedFunctions = reverse $ nubOrd $ concatMap (`dfs` callGraph) entryFunctions
+        sortedFunctions = getSortedFunctions allFunctions entryFunctions (W.elems m)
 
         getDatasInit :: V [M.Instruction]
         getDatasInit = concat <$> traverse getDataInit (W.datas m)
@@ -1176,20 +1154,6 @@ binarySearchInstrs funName = go
                 else go (filter (/=midfun) funs)
               )
           ]
-
--- Primitive functions
-
--- | The special name reserved for the 'starkify_call_indirect' procedure
-starkifyCallIndirectName :: Text
-starkifyCallIndirectName = "starkify_call_indirect"
-
--- -- | We simulate that the function is part of the WASM module, with index
--- --   @largest function index in the module + 1@.
--- starkifyCallIndirectId :: Integral a => Vector Function -> a
--- starkifyCallIndirectId funs = fromIntegral (V.length funs)
-
-primitiveFuns :: [Function]
-primitiveFuns = [ StarkifyFun starkifyCallIndirectName ]
 
 -- utilities
 
