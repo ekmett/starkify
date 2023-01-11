@@ -31,17 +31,12 @@ import Language.Wasm.Structure qualified as W
 
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
-import Tools (dfs)
 import Validation
 import WASI qualified
 import GHC.Stack (HasCallStack)
 
-type WasmAddr = Natural
-type MasmAddr = Word32
-type LocalAddrs = Map WasmAddr (W.ValueType, [MasmAddr])
-type FunName = Text
-type PrimFun = FunName
-data Function = ImportedFun W.Import | StarkifyFun FunName | DefinedFun W.Function
+import W2M.Common
+import Callgraph
 
 -- Note: Wasm modules may fail to compile if they contain > 2^29 functions.
 
@@ -109,28 +104,11 @@ toMASM m = do
         translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
         translateProc (Right p) = pure p
 
-        callGraph :: Map (Either PrimFun Int) (Set (Either PrimFun Int))
-        callGraph = Map.fromListWith (<>) $
-          [ (Right caller, Set.singleton (Right $ fromIntegral callee))
-          | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
-          , W.Call callee <- body
-          ] ++
-          [ ( Left starkifyCallIndirectName
-            , Set.fromList [ Right (fromIntegral f)
-                           | W.ElemSegment _ _ fs <- W.elems m
-                           , f <- fs
-                           ]
-            )
-          ] ++
-          [ (Right f, Set.singleton (Left starkifyCallIndirectName))
-          | (f, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
-          , W.CallIndirect _ <- body
-          ]
-
         -- Each compiler has a different convention for exporting the main function, and the
         -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
         -- currently pass input to the main function, we can proceed if either is present (and we
         -- should use both if both are present).
+        entryFunctions :: [FunVertex]
         entryFunctions = Right . fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
 
         -- An export with an empty string is considered to be a "default export".
@@ -151,7 +129,7 @@ toMASM m = do
 
         -- Miden requires procedures to be defined before any execs that reference them.
         sortedFunctions :: [Either PrimFun Int]
-        sortedFunctions = reverse $ nubOrd $ concatMap (`dfs` callGraph) entryFunctions
+        sortedFunctions = getSortedFunctions allFunctions entryFunctions (W.elems m)
 
         getDatasInit :: V [M.Instruction]
         getDatasInit = concat <$> traverse getDataInit (W.datas m)
@@ -369,6 +347,7 @@ toMASM m = do
                   br' <- brTable (j+1) idxs
                   pure [M.Dup 0, M.Eq (Just j), M.If (M.Drop : br) br']
         translateInstrs _ (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
+        translateInstrs a (W.Nop:is) k = translateInstrs a is k
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
         translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
@@ -611,7 +590,7 @@ toMASM m = do
           -- [u32_addr, val64_hi, val64_low, ...] for masm,
           -- and the call mem_store twice
           -- (once at u32_addr, once at u32_addr+1)
-          -- to get hi and lo 32 bits of i64 value.
+          -- to get hi and lo 32 bits of i64 value into memory.
           typed [W.I64, W.I32] []
               [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
               , M.Push 4, M.IDiv
@@ -625,6 +604,29 @@ toMASM m = do
               , M.MemStore Nothing -- [addr, lo, ...]
               , M.MemStore Nothing -- [...]
               ]
+        translateInstr _ (W.I64Load8U (W.MemArg offset _align)) =
+            typed [W.I32] [W.I64] $               -- [byte_addr, ...]
+                   [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
+                   , M.IAdd
+                   , M.IDivMod (Just 8)           -- [r, q, ...]
+                                                  --   where byte_addr+offset = 8*q + r
+                   , M.Dup 0, M.Push 3, M.IGt     -- [r > 3, r, q, ...]
+                   , M.MoveUp 2, M.Push 2, M.IMul -- [2*q, r > 3, r, ...]
+                   , M.Push memBeginning          -- [memBeginning, 2*q, r > 3, r, ...]
+                   , M.IAdd                       -- [memBeginning+2*q, r > 3, r, ...]
+                   , M.IAdd                       -- [memBeginning+2*q+(r > 3), r, ...]
+                   , M.MemLoad Nothing            -- [v, r, ...]
+                   , M.Swap 1                     -- [r, v, ...]
+                   , M.Push 4, M.IMod             -- [r `mod` 4, v, ...]
+                   , M.Push 8, M.IMul             -- [8*(r `mod` 4), v, ...]
+                   , M.IShR                       -- [v', ...]
+                   , M.Push 255, M.IAnd           -- [v'', ...]
+                   , M.Push 0                     -- [0, v'', ...]
+                     -- the 8 bits we care about are the 8 lowest of the 32 bits v'' value here,
+                     -- and they need to be the 8 lowest bits of the 0-everywhere-else 64 bits result,
+                     -- so we shift and zero out the appropriate 32 bits we read from memory and push
+                     -- 0 on top to make it represent a 64 bits value
+                   ]
         translateInstr _ (W.I64Store8 (W.MemArg offset _align)) =
           -- we have an 8-bit value stored in an i64 (two 32 bits in Miden land),
           -- e.g (lowest on the left):
@@ -639,44 +641,50 @@ toMASM m = do
           -- setting free the relevant bits in v:
           -- v'  = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
           -- and storing v' | i'
+          --
+          -- TODO: only load, transform and store the limb that's targetted by the memory
+          -- op?
             typed [W.I64, W.I32] []               -- [i_hi, i_lo, byte_addr, ...]
-                   [ M.Swap 1 , M.Swap 2          -- [byte_addr, i_hi, i_lo, ...]
+                   [ M.MoveUp 2                   -- [byte_addr, i_hi, i_lo, ...]
                    , M.Push (fromIntegral offset) -- [offset, byte_addr, i_hi, i_lo, ...]
                    , M.IAdd                       -- [byte_addr+offset, i_hi, i_lo, ...]
-                   , M.IDivMod (Just 4)           -- [r, q, i_hi, i_lo, ...]
-                                                  -- where byte_addr+offset = 4*q + r
-                   , M.Push 8, M.IMul             -- [8*r, q, i_hi, i_lo, ...]
-                   , M.Dup 0                      -- [8*r, 8*r, q, i_hi, i_lo, ...]
-                   , M.Push 255, M.Swap 1         -- [8*r, 255, 8*r, q, i_hi, i_lo, ...]
-                   , M.IShL, M.INot               -- [mask_hi, mask_lo, 8*r, q, i_hi, i_lo, ...]
-                   , M.Swap 2                     -- [8*r, mask_lo, mask_hi, q, i_hi, i_lo, ...]
-                   , M.Swap 1                     -- [mask_lo, 8*r, mask_hi, q, i_hi, i_lo, ...]
-                   , M.Swap 3                     -- [q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.Push memBeginning
-                   , M.IAdd                       -- [memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.Dup 0, M.Dup 0             -- [memBeginning+q, memBeginning+q, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.MemLoad Nothing            -- [v_lo, memBeginning+q, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.Swap 1, M.Push 1, M.IAdd   -- [memBeginning+q+1, v_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.MemLoad Nothing            -- [v_hi, v_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.Dup 5, M.Dup 5             -- [mask_hi, mask_lo, v_hi, v_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.IAnd64                     -- [v'_hi, v'_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.Swap 7, M.Swap 1           -- [v'_lo, i_lo, memBeginning+q, 8*r, mask_hi, mask_lo, i_hi, v'_hi, ...]
-                   , M.Swap 6                     -- [i_hi, i_lo, memBeginning+q, 8*r, mask_hi, mask_lo, v'_lo, v'_hi, ...]
-                   , M.Dup 3, M.IShL64            -- [i'_hi, i'_lo, memBeginning+q, 8*r, mask_hi, mask_lo, v'_lo, v'_hi, ...]
-                   , M.Swap 2, M.Swap 1           -- [i'_lo, memBeginning+q, i'_hi, 8*r, mask_hi, mask_lo, v'_lo, v'_hi, ...]
-                   , M.Swap 3                     -- [8*r, memBeginning+q, i'_hi, i'_lo, mask_hi, mask_lo, v'_lo, v'_hi, ...]
-                   , M.Swap 6, M.Swap 1           -- [memBeginning+q, v'_lo, i'_hi, i'_lo, mask_hi, mask_lo, 8*r, v'_hi, ...]
-                   , M.Swap 7                     -- [v'_hi, v'_lo, i'_hi, i'_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
-                   , M.IOr64                      -- [res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
-                   , M.Dup 5                      -- [memBeginning+q, res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
-                   , M.Push 1, M.IAdd             -- [memBeginning+q+1, res_hi, res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
-                   , M.MemStore Nothing           -- [res_lo, mask_hi, mask_lo, 8*r, memBeginning+q, ...]
-                   , M.MoveUp 4                   -- [memBeginning+q, res_lo, mask_hi, mask_lo, 8*r, ...]
-                   , M.MemStore Nothing           -- [mask_hi, mask_lo, 8*r, ...]
-                   , M.Drop, M.Drop, M.Drop       -- [...]
-                   ]
-        -- TODO: ^^^^^^ use M.MoveUp more!
+                   , M.IDivMod (Just 8)           -- [r, q, i_hi, i_lo, ...]
+                                                  -- where byte_addr+offset = 8*q + r
 
+                   , M.Push 8, M.IMul             -- [8*r, q, i_hi, i_lo, ...]
+                   , M.Push 255, M.Push 0         -- [0, 255, 8*r, q, i_hi, i_lo, ...]
+                   , M.Dup 2                      -- [8*r, 0, 255, 8*r, q, i_hi, i_lo, ...]
+
+                   , M.IShL64                     -- [(255 << 8*r)_hi, (255 << 8*r)_lo, 8*r, q, i_hi, i_lo, ...]
+                   , M.INot                       -- [mask_hi, (255 << 8*r)_lo, 8*r, q, i_hi, i_lo, ...]
+                   , M.Swap 1, M.INot, M.Swap 1   -- [mask_hi, mask_lo, 8*r, q, i_hi, i_lo, ...]
+
+                   , M.MoveUp 2
+                   , M.MoveUp 3                   -- [q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.Push 2, M.IMul             -- [2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+
+                   , M.Push memBeginning          -- [memBeginning, 2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.IAdd                       -- [memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.Dup 0, M.Dup 0             -- [memBeginning+2*q, memBeginning+2*q, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.MemLoad Nothing            -- [v_lo, memBeginning+2*q, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+
+                   , M.Swap 1, M.Push 1, M.IAdd   -- [memBeginning+2*q+1, v_lo, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+                   , M.MemLoad Nothing            -- [v_hi, v_lo, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+
+                   , M.MoveUp 5, M.MoveUp 5       -- [mask_hi, mask_lo, v_hi, v_lo, memBeginning+2*q, 8*r, i_hi, i_lo, ...]
+                   , M.IAnd64                     -- [v'_hi, v'_lo, memBeginning+2*q, 8*r, i_hi, i_lo, ...]
+
+                   , M.MoveUp 5, M.MoveUp 5       -- [i_hi, i_lo, v'_hi, v'_lo, memBeginning+2*q, 8*r, ...]
+                   , M.MoveUp 5                   -- [8*r, i_hi, i_lo, v'_hi, v'_lo, memBeginning+2*q, ...]
+                   , M.IShL64                     -- [i'_hi, i'_lo, v'_hi, v'_lo, memBeginning+2*q, ...]
+
+                   , M.IOr64                      -- [res_hi, res_lo, memBeginning+2*q, ...]
+
+                   , M.Dup 2, M.Push 1, M.IAdd    -- [memBeginning+2*q+1, res_hi, res_lo, memBeginning+2*q, ...]
+                   , M.MemStore Nothing           -- [res_lo, memBeginning+2*q, ...]
+                   , M.Swap 1                     -- [memBeginning+2*q, res_lo, ...]
+                   , M.MemStore Nothing           -- [...]
+                   ]
 
         -- turning an i32 into an i64 in wasm corresponds to pushing 0 on the stack.
         -- let's call the i32 'i'. before executing this, the stack looks like [i, ...],
@@ -688,15 +696,14 @@ toMASM m = do
         -- in miden, going from [v_hi, v_lo, ...] to [v_lo, ...]
         translateInstr _ W.I32WrapI64 = typed [W.I64] [W.I32] [M.Drop]
         -- this is a sign-aware extension, so we push 0 or maxBound :: Word32
-        -- depending on whether the most significant bit of the i32 is 0 or 1.
-        translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64]
+        -- depending on whether the 32 bits number is negative or not.
+        translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64] $
+            -- TODO: investigate performance of computing both branches and using select.
+            --       Miden docs suggest it might be faster.
             [ M.Dup 0                  -- [x, x, ...]
-            , M.Push 2147483648        -- [2^31, x, x, ...]
-            , M.IAnd                   -- [x & 2^31, x, ...]
-            , M.Push 31, M.IShR        -- [x_highest_bit, x, ...]
-            -- TODO: Use select
-            , M.If
-                [ M.Push 4294967295    -- [0b11..1, x, ...]
+            ] ++ computeIsNegative ++  -- [x_negative, x, ...]
+            [ M.If
+                [ M.Push maxBound      -- [0b11..1, x, ...]
                 ]
                 [ M.Push 0             -- [0, x, ...]
                 ]
@@ -795,7 +802,21 @@ translateIBinOp W.BS64 op = case op of
       ]
     )
   W.IRemU -> stackBinop W.I64 M.IMod64
-  _       -> unsupported64Bits op
+  W.IRemS -> do -- [b_hi, b_lo, a_hi, a_lo, ...] and we want a `rem` b
+    dups <- typed [W.I64, W.I64] [W.I64, W.I64, W.I64, W.I64]
+      (computeDup64 2 ++ computeDup64 2) -- [b_hi, b_lo, a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
+    divRes <- translateIBinOp W.BS64 W.IDivS -- [q_hi, q_lo, b_hi, b_lo, a_hi, a_lo, ...]
+    remRes <- typed [W.I64, W.I64, W.I64] [W.I64] $
+      [ M.IMul64 -- [ (b*q)_hi, (b*q)_lo, a_hi, a_lo, ...]
+      , M.ISub64 -- [ (a - b*q)_hi, (a - b*q)_lo, ...]
+      ]
+    return (dups ++ divRes ++ remRes)
+
+  -- in both of these, the number of bits by which we "rotate" needs to be a 64 bits integer for wasm
+  -- even though it's surely safe to assume we won't get arguments that don't fit in an 32 bits integer.
+  -- but since Miden wants a 32 bits argument there we just drop the high limb of the 64 bits integer.
+  W.IRotl -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IRotl64]
+  W.IRotr -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IRotr64]
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop W.I32 M.IAdd
   W.ISub  -> stackBinop W.I32 M.ISub
@@ -824,6 +845,14 @@ translateIBinOp W.BS32 op = case op of
           []                       -- [abs(a)/abs(b), ...]
       ]
     )
+  W.IRemS -> do -- [b, a, ...] and we want a `rem` b
+    dups <- typed [W.I32, W.I32] [W.I32, W.I32, W.I32, W.I32] [M.Dup 1, M.Dup 1] -- [b, a, b, a, ...]
+    divRes <- translateIBinOp W.BS32 W.IDivS -- [q, b, a, ...]
+    remRes <- typed [W.I32, W.I32, W.I32] [W.I32] $
+      [ M.IMul -- [ b*q, a, ...]
+      , M.ISub -- [ a - b*q, ...]
+      ]
+    return (dups ++ divRes ++ remRes)
   W.IShrS -> typed [W.I32, W.I32] [W.I32] -- [b, a, ...]
     ( [ M.Dup 1                  -- [a, b, a, ...]
       ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
@@ -836,7 +865,8 @@ translateIBinOp W.BS32 op = case op of
           [ M.IShR ]            -- [ a >> b, ...]
       ]
     )
-  _       -> unsupportedInstruction (W.IBinOp W.BS32 op)
+  W.IRotl -> stackBinop W.I32 M.IRotl
+  W.IRotr -> stackBinop W.I32 M.IRotr
 
 translateIRelOp :: W.BitSize -> W.IRelOp -> V [M.Instruction]
 translateIRelOp W.BS64 op = case op of
@@ -1153,20 +1183,6 @@ binarySearchInstrs funName = go
                 else go (filter (/=midfun) funs)
               )
           ]
-
--- Primitive functions
-
--- | The special name reserved for the 'starkify_call_indirect' procedure
-starkifyCallIndirectName :: Text
-starkifyCallIndirectName = "starkify_call_indirect"
-
--- -- | We simulate that the function is part of the WASM module, with index
--- --   @largest function index in the module + 1@.
--- starkifyCallIndirectId :: Integral a => Vector Function -> a
--- starkifyCallIndirectId funs = fromIntegral (V.length funs)
-
-primitiveFuns :: [Function]
-primitiveFuns = [ StarkifyFun starkifyCallIndirectName ]
 
 -- utilities
 

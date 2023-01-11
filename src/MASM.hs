@@ -80,6 +80,7 @@ data Instruction
   | IAnd | IOr | IXor | INot -- u32checked_{and, or, xor, not}
   | IEq (Maybe Word32) | INeq -- u32checked_{eq[.n], neq}
   | ILt | IGt | ILte | IGte -- u32checked_{lt[e], gt[e]}
+  | IRotl | IRotr
 
   -- "faked 64 bits" operations, u64::checked_{add,sub,mul}
   | IAdd64 | ISub64 | IMul64 | IDiv64 | IMod64
@@ -87,6 +88,7 @@ data Instruction
   | IOr64 | IAnd64 | IXor64
   | IEq64 | IEqz64 | INeq64
   | ILt64 | IGt64 | ILte64 | IGte64
+  | IRotl64 | IRotr64
 
   | Assert
   | AssertZ
@@ -196,6 +198,8 @@ ppInstr IAnd = "u32checked_and"
 ppInstr IOr = "u32checked_or"
 ppInstr IXor = "u32checked_xor"
 ppInstr INot = "u32checked_not"
+ppInstr IRotl = "u32checked_rotl"
+ppInstr IRotr = "u32checked_rotr"
 
 ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
 ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
@@ -216,6 +220,8 @@ ppInstr IShR64 = "exec.u64::unchecked_shr"
 ppInstr IOr64 = "exec.u64::checked_or"
 ppInstr IAnd64 = "exec.u64::checked_and"
 ppInstr IXor64 = "exec.u64::checked_xor"
+ppInstr IRotl64 = "exec.u64::unchecked_rotl"
+ppInstr IRotr64 = "exec.u64::unchecked_rotr"
 
 ppInstr Assert = "assert"
 ppInstr AssertZ = "assertz"

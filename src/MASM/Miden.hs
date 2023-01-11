@@ -3,6 +3,7 @@ module MASM.Miden where
 import Data.List
 import Data.Word
 import MASM
+import System.Directory
 import System.Exit
 import System.FilePath
 import System.IO
@@ -10,10 +11,19 @@ import System.IO.Temp
 import System.Process
 import Text.Read
 
-runMiden :: Module -> IO (Either String [Word32])
-runMiden m = withSystemTempFile "starkify-testfile-XXX.masm" $ \fp hndl -> do
+data KeepFile = Keep FilePath | DontKeep
+  deriving Show
+
+whenKeep :: KeepFile -> (FilePath -> IO a) -> IO (Maybe a)
+whenKeep k f = case k of
+  DontKeep -> return Nothing
+  Keep fp  -> Just <$> f fp
+
+runMiden :: KeepFile -> Module -> IO (Either String [Word32])
+runMiden keep m = withSystemTempFile "starkify-testfile-XXX.masm" $ \fp hndl -> do
     hPutStrLn hndl (ppMASM m)
     hClose hndl
+    whenKeep keep $ \masmModSaveFp -> copyFile fp masmModSaveFp
     (ex, midenout, midenerr) <- readProcessWithExitCode "miden" ["run", "--assembly", fp] ""
     case ex of
         ExitSuccess -> do

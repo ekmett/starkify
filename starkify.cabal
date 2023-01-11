@@ -13,19 +13,21 @@ extra-source-files: CHANGELOG.md
 
 library
   exposed-modules:
+    Callgraph,
     Eval,
     MASM,
     MASM.Interpreter,
     MASM.Miden,
     Validation,
     W2M,
-    Tools,
+    W2M.Common,
     WASI,
     WASM.WasmTime
   hs-source-dirs:     src
   build-depends:      base >=4.13 && <5,
                       bytestring,
                       containers,
+                      directory,
                       filepath,
                       mtl,
                       process,
@@ -35,11 +37,13 @@ library
                       wasm,
                       pretty-simple,
                       dlist,
+                      tuple,
                       monad-validate
   ghc-options:        -Wall
   default-language:   Haskell2010
   default-extensions:
         ApplicativeDo,
+        BlockArguments,
         LambdaCase,
         TupleSections,
         PartialTypeSignatures,
@@ -116,13 +120,13 @@ test-suite testfiles
         NamedFieldPuns,
         DisambiguateRecordFields
 
-test-suite arith-test
+test-suite properties
   type:                exitcode-stdio-1.0
   hs-source-dirs:      tests
-  main-is:             Arith.hs
-  other-modules:       TestFiles
+  main-is:             Properties.hs
+  other-modules:       TestFiles, Properties.Arith, Properties.Cmp, Properties.Common, Properties.Memory
   build-depends:       base, hspec, QuickCheck, starkify, temporary, wasm, filepath, directory, process, bytestring, pretty-simple, text
-  ghc-options:         -main-is Arith -threaded -rtsopts -with-rtsopts=-N -Wall
+  ghc-options:         -main-is Properties -threaded -rtsopts -with-rtsopts=-N -Wall
   default-language:    Haskell2010
   default-extensions:
         ApplicativeDo,
