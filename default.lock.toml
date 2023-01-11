@@ -1,0 +1,11 @@
+[nixpkgs]
+commit = "4d2b37a84fad1091b9de401eb450aae66f1a741e"
+sha256 = "11w3wn2yjhaa5pv20gbfbirvjq6i3m7pqrq2msf0g7cv44vijwgw"
+
+[rust-overlay]
+commit = "ede977678e5d0164316998487e686d0790744cd7"
+sha256 = "05sk61p3a5dhqfiaz7w01fc5fphxhl9d1aizwbvgiw7g0hrbc4v8"
+
+[miden-vm]
+commit = "a95e9c30376646669b0353b55739edc4cc520d29"
+sha256 = "sha256-hXKFmCiBJ2JT1RMtNe4gS7gHdd7OE6hdVPyG5BjSv1U="
