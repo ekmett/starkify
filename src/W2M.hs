@@ -727,19 +727,18 @@ toMASM m = do
 
 translateIUnOp :: W.BitSize -> W.IUnOp -> V [M.Instruction]
 translateIUnOp W.BS32 op = case op of
-  W.IPopcnt -> typed [W.I32] [W.I32] [ M.IPopcnt ]
+  W.IPopcnt -> typed [W.I32] [W.I32] [M.IPopcnt]
   _         -> unsupportedInstruction (W.IUnOp W.BS32 op)
 
 translateIUnOp W.BS64 op = case op of
-  W.IPopcnt ->
-    typed [W.I64] [W.I64] -- [a, b, ...]
-    [ M.IPopcnt           -- [popcnt(a), b, ...]
-    , M.Swap 1            -- [b, popcnt(a), ...]
-    , M.IPopcnt           -- [popcnt(b), popcnt(a), ...]
-    , M.IAdd              -- [popcnt(b) + popcnt(a), ...]
-    , M.Push 0            -- [0, popcnt(b) + popcnt(a), ...]
+  W.IPopcnt -> typed [W.I64] [W.I64] -- [a, b, ...]
+    [ M.IPopcnt                      -- [popcnt(a), b, ...]
+    , M.Swap 1                       -- [b, popcnt(a), ...]
+    , M.IPopcnt                      -- [popcnt(b), popcnt(a), ...]
+    , M.IAdd                         -- [popcnt(a)+popcnt(b), ...]
+    , M.Push 0                       -- [0, popcnt(a)+popcnt(b), ...]
     ]
-  _ -> unsupportedInstruction (W.IUnOp W.BS64 op)
+  _         -> unsupportedInstruction (W.IUnOp W.BS64 op)
 
 
 translateIBinOp :: W.BitSize -> W.IBinOp -> V [M.Instruction]
