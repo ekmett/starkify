@@ -81,6 +81,7 @@ data Instruction
   | IEq (Maybe Word32) | INeq -- u32checked_{eq[.n], neq}
   | ILt | IGt | ILte | IGte -- u32checked_{lt[e], gt[e]}
   | IRotl | IRotr
+  | IPopcnt -- u32checked_popcnt
 
   -- "faked 64 bits" operations, u64::checked_{add,sub,mul}
   | IAdd64 | ISub64 | IMul64 | IDiv64 | IMod64
@@ -200,6 +201,7 @@ ppInstr IXor = "u32checked_xor"
 ppInstr INot = "u32checked_not"
 ppInstr IRotl = "u32checked_rotl"
 ppInstr IRotr = "u32checked_rotr"
+ppInstr IPopcnt = "u32checked_popcnt"
 
 ppInstr (MemLoad mi) = [ "mem_load" ++ maybe "" (\i -> "." ++ show i) mi ]
 ppInstr (MemStore mi) = [ "mem_store" ++ maybe "" (\i -> "." ++ show i) mi ]
