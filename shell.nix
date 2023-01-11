@@ -16,12 +16,12 @@ let llvmPkgs = [ llvmPackages_14.clang llvmPackages_14.libllvm lld_14 ];
     rust166 = rust-bin.stable."1.66.0".default;
     miden = rustPlatform.buildRustPackage rec {
       pname = "miden";
-      version = "a95e9c30376646669b0353b55739edc4cc520d29";
+      version = "91590aefd92c0185c7a9593fec5eae4d64d1088c";
       src = fetchFromGitHub {
         owner = "0xPolygonMiden";
         repo = "miden-vm";
         rev = version;
-        sha256 = "sha256-hXKFmCiBJ2JT1RMtNe4gS7gHdd7OE6hdVPyG5BjSv1U=";
+        sha256 = "sha256-TUwnZJm9zsnC4/M/z2ZMw7jjEK/cpCJDVOE0I6+AkI0=";
       };
       cargoPatches = [ ./miden_cargolock.patch ];
       cargoLock.lockFile = ./miden_cargo.lock;
