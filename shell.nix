@@ -6,11 +6,11 @@ pkgs.mkShell {
     pkgs.llvmPackages_14.libllvm
     pkgs.lld_14
     pkgs.cabal-install
-    pkgs.ghc
     pkgs.wabt
     pkgs.wasmtime
-    
-    rust
+
     miden
+    rust
+    ghc
   ];
 }
