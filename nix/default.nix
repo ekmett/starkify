@@ -57,10 +57,10 @@ let
     license = "unknown";
     src = pkgs.runCommand "starkify-src" {} ''
       mkdir -p $out
-      cp -R ${./src} $out/src
-      cp -R ${./app} $out/app
-      cp -R ${./tests} $out/tests
-      cp ${./starkify.cabal} $out
+      cp -R ${../src} $out/src
+      cp -R ${../app} $out/app
+      cp -R ${../tests} $out/tests
+      cp ${../starkify.cabal} $out
     '';
     executableHaskellDepends = [
       aeson base bytestring containers directory dlist filepath
