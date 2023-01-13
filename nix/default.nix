@@ -40,33 +40,21 @@ let
       wasm = pkgs.haskell.lib.dontCheck (self.callHackage "wasm" "1.1.1" {});
     };
   };
-  ghc = haskellPackages.ghcWithPackages (p: with p; [
-    aeson
-    monad-validate
-    optparse-applicative
-    pretty-simple
-    temporary
-    wasm
-  ]);
-  starkify = with haskellPackages; mkDerivation {
-    pname = "starkify";
-    version = "0.1.0.0";
-    mainProgram = "starkify";
-    isExecutable = true;
-    doCheck = false;
-    license = "unknown";
-    src = pkgs.runCommand "starkify-src" {} ''
+  
+  starkify = (haskellPackages.callCabal2nix "starkify" (
+    pkgs.runCommand "starkify-src" {} ''
       mkdir -p $out
       cp -R ${../src} $out/src
       cp -R ${../app} $out/app
       cp -R ${../tests} $out/tests
       cp ${../starkify.cabal} $out
-    '';
-    executableHaskellDepends = [
-      aeson base bytestring containers directory dlist filepath
-      monad-validate mtl optparse-applicative pretty-simple process
-      temporary text vector wasm
-    ];
-  };
+    ''
+  ) {}).overrideAttrs (old: { doCheck = false; });
+
+  ghc = haskellPackages.ghcWithPackages (p: (
+    starkify.getCabalDeps.executableHaskellDepends 
+    ++ starkify.getCabalDeps.libraryHaskellDepends
+    ++ starkify.getCabalDeps.testHaskellDepends)
+  );
 in
 { inherit pkgs rust miden haskellPackages ghc starkify; }
