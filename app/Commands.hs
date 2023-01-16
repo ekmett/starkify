@@ -11,7 +11,7 @@ import Data.Word
 import GHC.Generics
 import Language.Wasm qualified as Wasm
 import MASM (ppMASM, Module)
-import MASM.Miden (runMidenVerify, runMiden)
+import MASM.Miden (runMidenVerify, runMiden, KeepFile (..))
 import Options
 import System.Exit
 import System.FilePath
@@ -45,7 +45,7 @@ runBuild BuildOpts {..} = (>>) (dump ("Compiling " ++ buildInFile ++ " ...")) $ 
 
   masmMod <- runValidation $ do
     standardValidator wasmMod
-    toMASM checkImports wasmMod
+    toMASM wasmMod
 
   when dumpMasmAst $
     dumps "MASM AST" (lines . T.unpack $ pShow masmMod)
@@ -136,7 +136,6 @@ runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp 
    masmMod <- runBuild $
      BuildOpts { buildInFile = interpInFile,
                  buildOutMasmFile = masmFile,
-                 checkImports = True,
                  dumpWasm = idumpWasm,
                  dumpWasmAst = idumpWasmAst,
                  dumpMasm = idumpMasm,
@@ -146,7 +145,7 @@ runInterpret InterpretOpts {..} = withSystemTempDirectory "runInterpret" $ \tmp 
                }
    case runInterp (interpret masmMod) of
      Right (stack, mem) -> do
-       midenStack <- either (\e -> error $ "Miden error: " ++ show e) id <$> runMiden masmMod
+       midenStack <- either (\e -> error $ "Miden error: " ++ show e) id <$> runMiden DontKeep masmMod
        dumps2 ("Interpreter output (" ++ interpInFile ++ ")")
               ([ "Stack: " ++ show stack
                , "       " ++ "(length = " ++ show (length stack) ++ ")"

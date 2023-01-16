@@ -1,98 +1,110 @@
 {-# LANGUAGE OverloadedLists #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+
 module Validation where
 
 import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
 import Data.DList qualified as DList
+import Data.Foldable
+import Data.Function (on)
 import Data.List (sortOn)
 import Data.Typeable
 import GHC.Natural
 import GHC.Generics
-import Language.Wasm.Structure
+import Language.Wasm.Structure qualified as W
+import Language.Wasm.Validate qualified  as W
 
-import W2M.Stack (StackProblem(..))
-
-import Language.Wasm.Structure qualified as WASM
-import Language.Wasm.Validate qualified  as WASM
 import Data.Text.Lazy qualified as LT
+import Data.Word
 
-type Id = Int
-
-newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () Id) a }
+newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
 
-deriving instance (Semigroup e) => MonadState Id (Validation e)
+deriving instance (Semigroup e) => MonadState W.ResultType (Validation e)
 deriving instance (Semigroup e) => MonadValidate e (Validation e)
 deriving instance MonadReader [Ctx] (Validation e)
-
-id0 :: Id
-id0 = 0
-
-nextId :: (Semigroup e) => Validation e Id
-nextId = state $ \i -> (i, i+1)
 
 bad :: e -> Validation (DList.DList (Error e)) a
 bad e = do
   ctxs <- ask
-  refute [Error ctxs e]
+  stack <- get
+  refute [Error ctxs stack e]
+
+data Block = Block | Loop | If deriving Show
 
 data Ctx =
-    InFunction (Maybe LT.Text) Natural -- func name, func id
+    InFunction Int -- func id
   | GlobalsInit
   | DatasInit
-  | ImportsCheck
+  | Import
   | Typechecker
-  | InInstruction Int (Instruction Natural)
-  | InBlock
-  | InLoop
+  | InInstruction Int (W.Instruction Natural) -- func id, instruction #
+  | InBlock Block W.BlockType W.ResultType -- block kind, block type, parent block stack on block entry (the whole stack, not just the usable stack)
+  | CallIndirectFun
   deriving Show
 
 inContext :: Ctx -> Validation e a -> Validation e a
-inContext c m = local (c:) m
+inContext c = local (c:)
 
-withContexts :: [Ctx] -> Validation e a -> Validation e a
-withContexts cs m = local (const cs) m
+blockDepth :: Validation e Int
+blockDepth = length . filter isBlock <$> ask
+  where isBlock (InBlock {}) = True
+        isBlock _ = False
 
 data ErrorData
   = FPOperation String
-  | GlobalMut ValueType
+  | GlobalMut W.ValueType
   | NoMain
-  | StdValidation WASM.ValidationError
-  | WasmFunctionCallIdx Int
-  | UnsupportedInstruction (WASM.Instruction Natural)
+  | StdValidation W.ValidationError
+  | UnsupportedInstruction (W.Instruction Natural)
   | Unsupported64Bits String
-  | UnsupportedMemAlign Natural (WASM.Instruction Natural)
+  | UnsupportedMemAlign Natural (W.Instruction Natural)
   | NoMultipleMem
   | UnsupportedImport LT.Text LT.Text LT.Text
-  | WasmStackProblem (StackProblem [Ctx])
-  | UnsupportedArgType WASM.ValueType
-  deriving Show
+  | ExpectedStack W.ParamsType W.ParamsType
+  | UnsupportedArgType W.ValueType
+  | EmptyStack
+  | NamedGlobalRef LT.Text
+  | BlockResultTooLarge Int
+  | NoMultipleTable
+  | UnsupportedElemDynOffset W.ElemSegment
+  | UnsupportedNonConsecutiveFuns Word32 W.FuncIndex Word32 W.FuncIndex
+  | BadStarkifyFun LT.Text
+  deriving (Eq, Ord, Show)
+
+deriving instance Ord (W.Instruction Natural)
+deriving instance Ord W.ValueType
+deriving instance Ord W.BlockType
+deriving instance Ord W.MemArg
+deriving instance Ord W.BitSize
+deriving instance Ord W.IUnOp
+deriving instance Ord W.IBinOp
+deriving instance Ord W.IRelOp
+deriving instance Ord W.FUnOp
+deriving instance Ord W.FBinOp
+deriving instance Ord W.FRelOp
+deriving instance Ord W.ElemSegment
+
+-- We need to do this manually, because Arrow ain't exported.
+-- Otherwise, we could do:
+-- deriving instance Ord W.Arrow
+-- deriving instance Ord W.ValidationError
+instance Ord W.ValidationError where
+  compare = compare `on` show
 
 data Error e = Error
   { errCtxs :: [Ctx]
+  , errStack :: W.ResultType
   , errData :: e
   } deriving Show
-
-errIdx :: ErrorData -> Int
-errIdx e = case e of
-  FPOperation _ -> 0
-  GlobalMut _ -> 1
-  NoMain -> 2
-  StdValidation _ -> 3
-  WasmFunctionCallIdx _ -> 4
-  UnsupportedInstruction _ -> 5
-  Unsupported64Bits _ -> 6
-  UnsupportedMemAlign _ _ -> 7
-  NoMultipleMem -> 8
-  UnsupportedImport {} -> 9
-  WasmStackProblem _ -> 10
-  UnsupportedArgType _ -> 11
 
 badFPOp :: String -> V a
 badFPOp s = bad (FPOperation s)
 
-badGlobalMut :: ValueType -> V a
+badGlobalMut :: W.ValueType -> V a
 badGlobalMut t = bad (GlobalMut t)
 
 badNoMain :: V a
@@ -101,56 +113,82 @@ badNoMain = bad NoMain
 badNoMultipleMem :: V a
 badNoMultipleMem = bad NoMultipleMem
 
-badImport :: LT.Text -> LT.Text -> LT.Text -> V a
-badImport imodule iname idesc = bad (UnsupportedImport imodule iname idesc)
 
-failsStandardValidation :: WASM.ValidationError -> V a
+badImport :: W.Import -> V a
+badImport (W.Import imodule iname idesc) = bad (UnsupportedImport imodule iname (descType idesc))
+
+badNoMultipleTable :: V a
+badNoMultipleTable = bad NoMultipleTable
+
+badNamedGlobalRef :: LT.Text -> V a
+badNamedGlobalRef = bad . NamedGlobalRef
+
+badStarkifyFun :: LT.Text -> V a
+badStarkifyFun s = bad (BadStarkifyFun s)
+
+descType :: W.ImportDesc -> LT.Text
+descType idesc = case idesc of
+                   W.ImportFunc _ -> "function"
+                   W.ImportTable _ -> "table"
+                   W.ImportMemory _ -> "memory"
+                   W.ImportGlobal _ -> "global"
+
+failsStandardValidation :: W.ValidationError -> V a
 failsStandardValidation e = bad (StdValidation e)
 
-badWasmFunctionCallIdx :: Int -> V a
-badWasmFunctionCallIdx i = bad (WasmFunctionCallIdx i)
-
-unsupportedInstruction :: WASM.Instruction Natural -> V a
+unsupportedInstruction :: W.Instruction Natural -> V a
 unsupportedInstruction i = bad (UnsupportedInstruction i)
 
 unsupported64Bits :: Show op => op -> V a
 unsupported64Bits op = bad (Unsupported64Bits $ show op)
 
-unsupportedMemAlign :: Natural -> WASM.Instruction Natural -> V a
+unsupportedMemAlign :: Natural -> W.Instruction Natural -> V a
 unsupportedMemAlign alig instr = bad (UnsupportedMemAlign alig instr)
 
-badStackTypeError :: StackProblem [Ctx] -> V a
-badStackTypeError e = bad (WasmStackProblem e)
-
-unsupportedArgType :: WASM.ValueType -> V a
+unsupportedArgType :: W.ValueType -> V a
 unsupportedArgType t = bad (UnsupportedArgType t)
+
+unsupportedElemDynOffset :: W.ElemSegment -> V a
+unsupportedElemDynOffset segment = bad (UnsupportedElemDynOffset segment)
+
+badFunsNotConsecutive :: Word32 -> W.FuncIndex -> Word32 -> W.FuncIndex -> V a
+badFunsNotConsecutive i fi j fj = bad (UnsupportedNonConsecutiveFuns i fi j fj)
 
 ppErrData :: ErrorData -> String
 ppErrData (FPOperation op) = "unsupported floating point operation: " ++ op
 ppErrData (GlobalMut t) = "unsupported global mutable variable of type: " ++
   (case t of
-     I32 -> "32 bits integer"
-     I64 -> "64 bits integer"
-     F32 -> "32 bits floating point"
-     F64 -> "64 bits floating point"
+     W.I32 -> "32 bits integer"
+     W.I64 -> "64 bits integer"
+     W.F32 -> "32 bits floating point"
+     W.F64 -> "64 bits floating point"
   )
-ppErrData NoMain = "missing main function"
+ppErrData NoMain = "No start function or 'main' function found in WASM module, cannot proceed."
 ppErrData (StdValidation e) = "standard validator issue: " ++ show e
-ppErrData (WasmFunctionCallIdx i) = "invalid index in function call: " ++ show i
-ppErrData (UnsupportedInstruction _i) = "unsupported WASM instruction"
+ppErrData (UnsupportedInstruction i) = "unsupported WASM instruction: " ++ show i
 ppErrData (Unsupported64Bits opstr) = "unsupported 64 bit operation (" ++ opstr ++ ")"
-ppErrData (UnsupportedMemAlign a _instr) = "unsupported alignment: " ++ show a
+ppErrData (UnsupportedMemAlign a instr) = "unsupported alignment: " ++ show a ++ " in " ++ show instr
 ppErrData NoMultipleMem = "multiple memories not supported"
 ppErrData (UnsupportedImport imodule iname idesc) =
   "unsupported import: module=" ++ LT.unpack imodule ++
   ", name=" ++ LT.unpack iname ++ " (" ++ LT.unpack idesc ++ ")"
-ppErrData (WasmStackProblem (StackExpectedGot expected got _)) =
-  "stack problem: expected stack prefix " ++ show expected ++
-  " but got stack " ++ show (take (length expected) got)
-ppErrData (WasmStackProblem (StackEmpty _)) =
-  "stack problem: expected non empty stack"
+ppErrData (ExpectedStack expected got) =
+  "expected stack prefix " ++ show expected ++ " but got " ++ show (take (length expected) got)
+ppErrData EmptyStack =
+  "expected a non-empty stack"
 ppErrData (UnsupportedArgType t) =
   "unsupported argument type: " ++ show t
+ppErrData (NamedGlobalRef n) =
+  "undefined global variable: " ++ show n
+ppErrData (BlockResultTooLarge s) =
+  "function result too large: " ++ show s
+ppErrData NoMultipleTable = "multiple tables not supported"
+ppErrData (UnsupportedElemDynOffset segment) =
+  "unsupported dynamic offset for elem segment: " ++ show segment
+ppErrData (UnsupportedNonConsecutiveFuns i fi j fj) =
+  "non consecutive functions #" ++ show fi ++ " (offset " ++ show i ++ ") and #" ++
+  show fj ++ " (offset " ++ show j ++ ")"
+ppErrData (BadStarkifyFun n) = "unknown primitive starkify function " ++ show n
 
 ppErr :: Error ErrorData -> [String]
 ppErr e =
@@ -163,19 +201,19 @@ ppErr e =
   where red s = "\ESC[0;31m" ++ s ++ "\ESC[0m"
 
 ppErrCtx :: Ctx -> String
-ppErrCtx (InFunction mname i) = "of function " ++ show i ++ maybe "" (\name -> " (" ++ LT.unpack name ++ ")") mname
+ppErrCtx (InFunction i) = "of function " ++ show i
 ppErrCtx DatasInit = "in data section"
 ppErrCtx GlobalsInit = "in globals initialisation"
-ppErrCtx ImportsCheck = "in imports"
+ppErrCtx Import = "in import"
 ppErrCtx Typechecker = "in typechecking"
 ppErrCtx (InInstruction k i) = "in instruction #" ++ show k ++ ": " ++ take 100 (show i) ++ "  ..."
-ppErrCtx InBlock = "of block"
-ppErrCtx InLoop = "of loop"
+ppErrCtx (InBlock t _ _) = "of " <> show t
+ppErrCtx CallIndirectFun = "of generated indirect call function"
 
 type V = Validation (DList.DList (Error ErrorData))
 
 runValidation :: V a -> IO a
-runValidation (Validation e) = case runRWS (runValidateT e) [] id0 of
-  (Left errs, _i, _w) -> error . unlines . ("":) $
-    concatMap ppErr (sortOn (errIdx . errData) $ DList.toList errs)
+runValidation (Validation e) = case runRWS (runValidateT e) [] [] of
+  (Left errs, _i, _w) -> error . unlines . toList .
+    concatMap ppErr . sortOn errData $ toList errs
   (Right a, _i, _w) -> return a

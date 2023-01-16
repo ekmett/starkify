@@ -268,7 +268,7 @@ Verification successful
 # Tests
 
 ``` sh
-$ cabal run starkify-testfiles
+$ cabal run testfiles
 Up to date
 
 testfiles/bitwise.c

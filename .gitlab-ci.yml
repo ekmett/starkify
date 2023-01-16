@@ -1,13 +1,29 @@
-# You can override the included template(s) by including variable overrides
-# SAST customization: https://docs.gitlab.com/ee/user/application_security/sast/#customizing-the-sast-settings
-# Secret Detection customization: https://docs.gitlab.com/ee/user/application_security/secret_detection/#customizing-settings
-# Dependency Scanning customization: https://docs.gitlab.com/ee/user/application_security/dependency_scanning/#customizing-the-dependency-scanning-settings
-# Container Scanning customization: https://docs.gitlab.com/ee/user/application_security/container_scanning/#customizing-the-container-scanning-settings
-# Note that environment variables can be set in several places
-# See https://docs.gitlab.com/ee/ci/variables/#cicd-variable-precedence
 stages:
 - test
-sast:
-  stage: test
+
 include:
-- template: Security/SAST.gitlab-ci.yml
+  - project: 'devops/gitlab-ci-templates'
+    ref: master
+    file: .gitlab-ci.yml
+
+gitleaks:
+  stage: test
+  allow_failure: true
+
+testfiles:
+  stage: test
+  tags:
+    - nixos-starkify-runner
+  script:
+    - nix-shell --run "cabal build --enable-tests"
+    - nix-shell --run "cabal test"
+    - nix-shell --run "cabal run testfiles"
+
+additional_arith_test:
+  stage: test
+  tags:
+    - nixos-starkify-runner
+  script:
+    - nix-shell --run "cabal test --test-option=--qc-max-success=1000"
+  only:
+    - master

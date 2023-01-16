@@ -1,6 +1,6 @@
 module TestFiles where
 
-import Eval (simulateWASM, simulateMASM)
+import Eval (simulateWASM)
 import MASM.Interpreter (runInterp, interpret, FakeW64(..), fromFakeW64)
 import MASM.Miden
 import Validation (runValidation)
@@ -76,21 +76,21 @@ compareWasmMasmResult expectedOutFile wmod = do
   expectedOut <- case mexpectedOut of
     Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
     Just res -> return res
-  mmod <- runValidation (toMASM True wmod)
-  mmasmres <- runMiden mmod
+  mmod <- runValidation (toMASM wmod)
+  mmasmres <- runMiden DontKeep mmod
   case (mwasmres, mmasmres) of
-    (Just vals, Right stack) -> checkOutput expectedOut stack >> compareStacks vals stack 0
+    (v, Right stack) -> checkOutput expectedOut stack >> compareStacks (reverse v) stack
     _ -> error ("unexpected results: " ++ show (mwasmres, mmasmres))
 
-  where compareStacks [] masmstack _k = filter (/=0) masmstack `shouldBe` []
-        compareStacks (Wasm.VI32 wasm_w32 : wasm_vs) (masm_w32 : masm_vs) k = do
+  where compareStacks [] masmstack = filter (/=0) masmstack `shouldBe` []
+        compareStacks (Wasm.VI32 wasm_w32 : wasm_vs) (masm_w32 : masm_vs) = do
           wasm_w32 `shouldBe` masm_w32
-          compareStacks wasm_vs masm_vs (k+1)
-        compareStacks (Wasm.VI64 wasm_w64 : wasm_vs) (masm_w64_hi:masm_w64_lo:masm_vs) k = do
+          compareStacks wasm_vs masm_vs
+        compareStacks (Wasm.VI64 wasm_w64 : wasm_vs) (masm_w64_hi:masm_w64_lo:masm_vs) = do
           let masm_w64 = fromFakeW64 (FakeW64 masm_w64_hi masm_w64_lo)
           wasm_w64 `shouldBe` masm_w64
-          compareStacks wasm_vs masm_vs (k+1)
-        compareStacks wasmstack masmstack k = error $ "cannot compare stacks: " ++ show (wasmstack, masmstack)
+          compareStacks wasm_vs masm_vs
+        compareStacks wasmstack masmstack = error $ "cannot compare stacks: " ++ show (wasmstack, masmstack)
 
 checkOutput :: [Word32] -> [Word32] -> Expectation
 checkOutput expected actual = do
@@ -99,7 +99,7 @@ checkOutput expected actual = do
 
 genProofAndVerify :: Wasm.Module -> Expectation
 genProofAndVerify wmod = do
-  mmod <- runValidation (toMASM True wmod)
+  mmod <- runValidation (toMASM wmod)
   (midenOut, midenProof, midenProgHash) <- runMidenProve mmod
   verifRes <- runMidenVerify midenOut midenProof midenProgHash
   verifRes `shouldBe` Nothing
@@ -111,7 +111,7 @@ checkInterpreter expectedOutFile wmod = do
   expectedOut <- case mexpectedOut of
     Nothing -> error $ "couldn't parse " ++ expectedOutFile ++ " as [Word32]"
     Just res -> return res
-  mmod <- runValidation (toMASM True wmod)
+  mmod <- runValidation (toMASM wmod)
   case runInterp (interpret mmod) of
     Right (stack, _mem) -> checkOutput expectedOut stack
     Left err -> error ("checkInterpreter: " ++ err)

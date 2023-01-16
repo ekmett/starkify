@@ -1,7 +1,9 @@
 *.env
 *.ipynb_checkpoints/*
-db/dev/google_analytics/client_secret.json
-archive/*
 *.pyc
 .DS_Store
+.vscode/
+/dist/
+archive/*
+db/dev/google_analytics/client_secret.json
 dist-newstyle/
