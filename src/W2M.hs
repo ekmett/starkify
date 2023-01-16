@@ -371,8 +371,25 @@ toMASM m = do
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
         translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
         translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
-        translateInstr _ W.Select = typed [W.I32, W.I32, W.I32] [W.I32]
-          [M.CDrop]
+        translateInstr _ W.Select = do
+          stk <- get
+          case stk of
+            (W.I32:f:t:ss) -> if t == f                                          -- [c, f, t, ...]
+                                then do let impl = if t == W.I32 || t == W.F32
+                                                     then [ M.Eq (Just 0)        -- [not c, f, t, ...]
+                                                          , M.CDrop              -- c? [t, ...] else [f, ...]
+                                                          ]
+                                                     else [ M.NEq (Just 0)       -- [c, f, f, t, t, ...]
+                                                          , M.If                 -- [f, f, t, t, ...]
+                                                            [ M.Drop, M.Drop ]   -- [t, t, ...]
+                                                            [ M.MoveUp 2, M.Drop -- [f, f, t, ...]
+                                                            , M.MoveUp 2, M.Drop -- [f, f, ...]
+                                                            ]
+                                                          ]
+                                        put (t : ss) >> pure impl
+                                else unsupportedArgType f
+            (cond:_) -> unsupportedArgType cond
+            _ -> bad EmptyStack
         translateInstr _ (W.I32Load (W.MemArg offset _align)) = typed [W.I32] [W.I32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                    [ M.Push 4
