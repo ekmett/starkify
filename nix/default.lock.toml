@@ -7,5 +7,5 @@ commit = "ede977678e5d0164316998487e686d0790744cd7"
 sha256 = "05sk61p3a5dhqfiaz7w01fc5fphxhl9d1aizwbvgiw7g0hrbc4v8"
 
 [miden-vm]
-commit = "a95e9c30376646669b0353b55739edc4cc520d29"
-sha256 = "sha256-hXKFmCiBJ2JT1RMtNe4gS7gHdd7OE6hdVPyG5BjSv1U="
+commit = "e49af675b589ab078f8ea8b63a9c0c1861c446d4"
+sha256 = "sha256-6VL9fRTbjfg/4MhYOtb5NzMnljQoMwzG73PVHuiwhJ0="
