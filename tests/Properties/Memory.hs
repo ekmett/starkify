@@ -11,7 +11,7 @@ import GHC.Natural
 import Test.QuickCheck hiding ((.&.))
 import Data.Proxy
 import Data.Int
-import qualified Eval as Eval
+import qualified Eval
 import qualified MASM.Miden as Miden
 import qualified Data.Text.Lazy.IO as T
 import W2M (toMASM)
@@ -60,7 +60,7 @@ toMemArgL (MemLoad addr align _a) =
 
 instance (MemCellStore mem a, Arbitrary a, Arbitrary mem) => Arbitrary (MemStore mem a) where
   arbitrary = MemStore <$> genAddr
-                       <*> (fmap (MemAlign . fromIntegral) (genAligns (Proxy @mem) (Proxy @a)))
+                       <*> (MemAlign . fromIntegral <$> genAligns (Proxy @mem) (Proxy @a))
                        <*> arbitrary
                        <*> arbitrary
     where addrMultiple = case cellTy (Proxy @mem) of
@@ -73,7 +73,7 @@ instance (MemCellStore mem a, Arbitrary a, Arbitrary mem) => Arbitrary (MemStore
 
 instance (MemCellStore mem a, Arbitrary mem) => Arbitrary (MemLoad mem a) where
   arbitrary = MemLoad <$> genAddr
-                      <*> (fmap (MemAlign . fromIntegral) (genAligns (Proxy @mem) (Proxy @a)))
+                      <*> (MemAlign . fromIntegral <$> genAligns (Proxy @mem) (Proxy @a))
                       <*> arbitrary
     where addrMultiple = case cellTy (Proxy @mem) of
             W32 -> 4
@@ -185,7 +185,7 @@ instance MemCellStore Word32 Int8 where
     " and previous value=" ++ show prev
 instance MemCellLoad Word32 Int8 where
   wasmLoad _ _ = W.I32Load8S
-  checkLoad (MemLoad addr align a) res = checkLoad (MemLoad addr align a :: MemLoad Word32 Word8) res
+  checkLoad (MemLoad addr align a) = checkLoad (MemLoad addr align a :: MemLoad Word32 Word8)
   showLoad (MemLoad addr (MemAlign align) a) =
     "i32.load8_s of " ++ show a ++ " at address=" ++ show (addrBase addr) ++
     ", offset=" ++ show (addrOffset addr) ++

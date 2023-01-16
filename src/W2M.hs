@@ -167,15 +167,6 @@ toMASM m = do
         types :: Vector W.FuncType
         types = V.fromList $ W.types m
 
-        isEmptyFun :: Function -> Bool
-        isEmptyFun fun@(DefinedFun (W.Function _ _ []))
-                = null $ W.params (functionType fun)
-        isEmptyFun _ = False
-
-        emptyFunctions :: Set Int
-        emptyFunctions = Set.fromList $ V.toList $ V.findIndices isEmptyFun allFunctions
-
-
         functionType :: Function -> W.FuncType
         -- Function indices are checked by the wasm library and will always be in range.
         functionType (ImportedFun (W.Import _ _ (W.ImportFunc idx))) = types ! fromIntegral idx
@@ -264,7 +255,6 @@ toMASM m = do
         fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
         fun2MASM (Right idx) = case allFunctions ! idx of
             f@(ImportedFun i) -> inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
-            fun | isEmptyFun fun -> return Nothing
             DefinedFun (W.Function typ localsTys body) -> inContext (InFunction idx) $ do
               let wasm_args = W.params (types ! fromIntegral typ)
                   wasm_locals = localsTys
@@ -351,18 +341,12 @@ toMASM m = do
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
         translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
-        translateInstr _ (W.Call idx) = let i = fromIntegral idx in
-          case functionType (allFunctions ! i) of
-            W.FuncType params res -> do
-              params' <- checkTypes params
-              res' <- checkTypes res
-              let instrs =
-                    if Set.member i emptyFunctions
-                      then
-                        -- Comment what empty function we would have called.
-                        [M.comment . M.runPPMasm $ M.ppInstr $ M.Exec $ procName (Right i)]
-                      else [M.Exec $ procName (Right i)]
-              typed (reverse params') res' instrs
+        translateInstr _ (W.Call idx) = do
+          let i = fromIntegral idx
+              W.FuncType params res = functionType (allFunctions ! i)
+          params' <- checkTypes params
+          res' <- checkTypes res
+          typed (reverse params') res' [M.Exec $ procName (Right i)]
         translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
         translateInstr _ (W.IUnOp bitsz op) = translateIUnOp bitsz op
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
@@ -605,7 +589,7 @@ toMASM m = do
               , M.MemStore Nothing -- [...]
               ]
         translateInstr _ (W.I64Load8U (W.MemArg offset _align)) =
-            typed [W.I32] [W.I64] $               -- [byte_addr, ...]
+            typed [W.I32] [W.I64]                 -- [byte_addr, ...]
                    [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd
                    , M.IDivMod (Just 8)           -- [r, q, ...]
@@ -794,7 +778,7 @@ translateIBinOp W.BS64 op = case op of
     dups <- typed [W.I64, W.I64] [W.I64, W.I64, W.I64, W.I64]
       (computeDup64 2 ++ computeDup64 2) -- [b_hi, b_lo, a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
     divRes <- translateIBinOp W.BS64 W.IDivS -- [q_hi, q_lo, b_hi, b_lo, a_hi, a_lo, ...]
-    remRes <- typed [W.I64, W.I64, W.I64] [W.I64] $
+    remRes <- typed [W.I64, W.I64, W.I64] [W.I64]
       [ M.IMul64 -- [ (b*q)_hi, (b*q)_lo, a_hi, a_lo, ...]
       , M.ISub64 -- [ (a - b*q)_hi, (a - b*q)_lo, ...]
       ]
@@ -836,7 +820,7 @@ translateIBinOp W.BS32 op = case op of
   W.IRemS -> do -- [b, a, ...] and we want a `rem` b
     dups <- typed [W.I32, W.I32] [W.I32, W.I32, W.I32, W.I32] [M.Dup 1, M.Dup 1] -- [b, a, b, a, ...]
     divRes <- translateIBinOp W.BS32 W.IDivS -- [q, b, a, ...]
-    remRes <- typed [W.I32, W.I32, W.I32] [W.I32] $
+    remRes <- typed [W.I32, W.I32, W.I32] [W.I32]
       [ M.IMul -- [ b*q, a, ...]
       , M.ISub -- [ a - b*q, ...]
       ]
