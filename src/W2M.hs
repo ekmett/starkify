@@ -221,6 +221,16 @@ toMASM m = do
                  is
           ]
 
+        continueLoop :: [M.Instruction]
+        continueLoop =
+          [ M.MemLoad (Just branchCounter)
+          , M.Eq (Just 1)
+          , M.Dup 0
+          , M.If [ M.Push 0
+                  , M.MemStore (Just branchCounter)
+                  ] []
+          ]
+
         blockResultType :: W.BlockType -> W.ResultType
         blockResultType (W.Inline Nothing) = []
         blockResultType (W.Inline (Just t')) = [t']
@@ -304,14 +314,6 @@ toMASM m = do
           put (blockResultType t <> stack)
           is' <- continue <$> translateInstrs a is (k+1)
           pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
-          where continueLoop =
-                  [ M.MemLoad (Just branchCounter)
-                  , M.Eq (Just 1)
-                  , M.Dup 0
-                  , M.If [ M.Push 0
-                         , M.MemStore (Just branchCounter)
-                         ] []
-                  ]
         translateInstrs a (i@(W.If t tb fb):is) k = do
           stack <- get
           (tb', fb') <- inContext (InInstruction k i) $ do
