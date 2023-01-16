@@ -20,7 +20,7 @@ import Validation (runValidation)
 import W2M (toMASM)
 
 import qualified Data.Text.Lazy.IO as T
-import qualified Eval as Eval
+import qualified Eval
 import qualified MASM.Miden as Miden
 import qualified Language.Wasm.Structure as W
 

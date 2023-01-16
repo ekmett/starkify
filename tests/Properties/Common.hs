@@ -29,14 +29,14 @@ instance Typed Word32 where
     fromWStack s = case s of
       W.VI32 w : _ -> Just w
       _            -> Nothing
-    wasmPush w = W.I32Const w
+    wasmPush = W.I32Const
     bitsize _ = W.BS32
     isSignedTy _ = False
 instance Typed Int32 where
     typeOf _ = I32
     fromMStack = fmap fromIntegral . listToMaybe
     fromWStack = fmap fromIntegral . (fromWStack :: [W.Value] -> Maybe Word32)
-    wasmPush i = W.I32Const (fromIntegral i)
+    wasmPush = W.I32Const . fromIntegral
     bitsize _ = W.BS32
     isSignedTy _ = True
 instance Typed Word64 where
@@ -46,14 +46,13 @@ instance Typed Word64 where
     fromWStack s = case s of
       W.VI64 w : _ -> Just w
       _            -> Nothing
-    wasmPush w = W.I64Const w
+    wasmPush = W.I64Const
     bitsize _ = W.BS64
     isSignedTy _ = False
 instance Typed Int64 where
     typeOf _ = I64
     fromMStack = fmap fromIntegral . (fromMStack :: [Word32] -> Maybe Word64)
     fromWStack = fmap fromIntegral . (fromWStack :: [W.Value] -> Maybe Word64)
-    wasmPush w = W.I64Const (fromIntegral w)
+    wasmPush = W.I64Const . fromIntegral
     bitsize _ = W.BS64
     isSignedTy _ = True
-
