@@ -369,6 +369,7 @@ toMASM m = do
           res' <- checkTypes res
           typed (reverse params') res' [M.Exec $ procName (Right i)]
         translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
+        translateInstr _ (W.IUnOp bitsz op) = translateIUnOp bitsz op
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
         translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
         translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
@@ -728,6 +729,22 @@ toMASM m = do
             typed (W.I32:reverse params) ret [M.Exec starkifyCallIndirectName]
 
         translateInstr _ i = unsupportedInstruction i
+
+translateIUnOp :: W.BitSize -> W.IUnOp -> V [M.Instruction]
+translateIUnOp W.BS32 op = case op of
+  W.IPopcnt -> typed [W.I32] [W.I32] [M.IPopcnt]
+  _         -> unsupportedInstruction (W.IUnOp W.BS32 op)
+
+translateIUnOp W.BS64 op = case op of
+  W.IPopcnt -> typed [W.I64] [W.I64] -- [a, b, ...]
+    [ M.IPopcnt                      -- [popcnt(a), b, ...]
+    , M.Swap 1                       -- [b, popcnt(a), ...]
+    , M.IPopcnt                      -- [popcnt(b), popcnt(a), ...]
+    , M.IAdd                         -- [popcnt(a)+popcnt(b), ...]
+    , M.Push 0                       -- [0, popcnt(a)+popcnt(b), ...]
+    ]
+  _         -> unsupportedInstruction (W.IUnOp W.BS64 op)
+
 
 translateIBinOp :: W.BitSize -> W.IBinOp -> V [M.Instruction]
 -- TODO: the u64 module actually provides implementations of many binops for 64 bits
