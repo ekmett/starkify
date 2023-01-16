@@ -2,7 +2,7 @@
   (func $main (result i32)
     (local $i i32)
     i32.const 1
-    local.set $i   ;; $i = 9
+    local.set $i   ;; $i = 1
     i32.const 0    ;; accumulator = 0
     (loop (param i32) (result i32)
       local.get $i

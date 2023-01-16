@@ -344,12 +344,12 @@ toMASM m = do
                    (_, _) -> [M.NEq (Just 0), M.If tb' fb'] <> is'
           where params = blockParamsType t
         translateInstrs _ (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
-        translateInstrs a (i@(W.BrIf idx):is) k = do
-          is' <- translateInstrs a is (k+1)
+        translateInstrs a (i@(W.BrIf idx):is) k = typed' [W.I32] [] $ do
           br <- inContext (InInstruction k i) $ branch idx
+          is' <- translateInstrs a is (k+1)
           pure [M.NEq (Just 0), M.If br is']
         -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-        translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = inContext (InInstruction k i) $ brTable 0 cases
+        translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = typed' [W.I32] [] $ inContext (InInstruction k i) $ brTable 0 cases
           where brTable _ [] = (M.Drop :) <$> branch defaultIdx
                 brTable j (idx:idxs) = do
                   br <- branch idx
@@ -1099,12 +1099,15 @@ computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
   ]
 
 typed :: W.ParamsType -> W.ResultType -> a -> V a
-typed params result x = do
+typed params result x = typed' params result (pure x)
+
+typed' :: W.ParamsType -> W.ResultType -> V a -> V a
+typed' params result x = do
   stk <- get
   case stripPrefix params stk of
     Nothing -> bad (ExpectedStack params stk)
     Just stk' -> f stk'
-  where f stack = put (result <> stack) >> pure x
+  where f stack = put (result <> stack) >> x
 
 withPrefix :: (W.ValueType -> V a) -> V a
 withPrefix f = get >>= \ case
