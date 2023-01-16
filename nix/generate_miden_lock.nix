@@ -1,6 +1,6 @@
 # nix-shell generate_miden_lock.nix
 # Generates miden_cargo.lock based on miden source code.
-{ tempdir ? toString ./.temp
+{ tmpdir ? toString ./.temp
 , output ? toString ./miden_cargo.lock
 }:
 with (import ./. {});
