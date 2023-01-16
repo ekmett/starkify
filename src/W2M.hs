@@ -19,8 +19,6 @@ import Data.List (stripPrefix, sortOn)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, maybeToList)
-import Data.Set (Set)
-import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
 import Data.Text.Lazy qualified as T
 import Data.Vector (Vector)
