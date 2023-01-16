@@ -6,7 +6,7 @@ import Test.QuickCheck
 import qualified Language.Wasm.Structure as W
 import Properties.Common
 import Data.Word
-import qualified Eval as Eval
+import qualified Eval
 import qualified MASM.Miden as Miden
 import qualified Data.Text.Lazy.IO as T
 import Text.Pretty.Simple
@@ -77,7 +77,7 @@ cmpTest debug cmp@(Cmp x y cmpop) = ioProperty $ do
   Just reference <- fromWStack @Word32 <$> Eval.simulateWASM wmod
   when debug $
     putStrLn $ "result = " ++ show reference ++ " (" ++
-               show (if reference == 1 then True else False) ++ ")"
+               show (reference == 1) ++ ")"
   when debug $ T.putStrLn (pShow wmod)
   mres <- runValidation (toMASM wmod) >>= \mmod -> do
     when debug $ T.putStrLn (pShow mmod)

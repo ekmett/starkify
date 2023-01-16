@@ -604,7 +604,7 @@ toMASM m = do
               , M.MemStore Nothing -- [...]
               ]
         translateInstr _ (W.I64Load8U (W.MemArg offset _align)) =
-            typed [W.I32] [W.I64] $               -- [byte_addr, ...]
+            typed [W.I32] [W.I64]                 -- [byte_addr, ...]
                    [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
                    , M.IAdd
                    , M.IDivMod (Just 8)           -- [r, q, ...]
@@ -777,7 +777,7 @@ translateIBinOp W.BS64 op = case op of
     dups <- typed [W.I64, W.I64] [W.I64, W.I64, W.I64, W.I64]
       (computeDup64 2 ++ computeDup64 2) -- [b_hi, b_lo, a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
     divRes <- translateIBinOp W.BS64 W.IDivS -- [q_hi, q_lo, b_hi, b_lo, a_hi, a_lo, ...]
-    remRes <- typed [W.I64, W.I64, W.I64] [W.I64] $
+    remRes <- typed [W.I64, W.I64, W.I64] [W.I64]
       [ M.IMul64 -- [ (b*q)_hi, (b*q)_lo, a_hi, a_lo, ...]
       , M.ISub64 -- [ (a - b*q)_hi, (a - b*q)_lo, ...]
       ]
@@ -819,7 +819,7 @@ translateIBinOp W.BS32 op = case op of
   W.IRemS -> do -- [b, a, ...] and we want a `rem` b
     dups <- typed [W.I32, W.I32] [W.I32, W.I32, W.I32, W.I32] [M.Dup 1, M.Dup 1] -- [b, a, b, a, ...]
     divRes <- translateIBinOp W.BS32 W.IDivS -- [q, b, a, ...]
-    remRes <- typed [W.I32, W.I32, W.I32] [W.I32] $
+    remRes <- typed [W.I32, W.I32, W.I32] [W.I32]
       [ M.IMul -- [ b*q, a, ...]
       , M.ISub -- [ a - b*q, ...]
       ]
