@@ -44,6 +44,25 @@ import Callgraph
 branchCounter :: MasmAddr
 branchCounter = 0
 
+{-
+
+The memory at the branchCounter address (henceforth just branchCounter
+for simplicity) is used when we are simulating a non-local exit from
+WASM instructions like `br` or `return`.
+
+Crucially, we translate `br index` to a branchCounter of `index + 1`.
+That is so that we have a special value, `0` to indicate that we aren't
+doing a non-local exit at the moment.
+
+In most situations, `br 0` and a local exit are indistinguishable at the end
+of a block.  The only reason we need to distinguish between the two are br
+that target a `loop`.
+
+For a loop a normal local exit just exits the loop, and a br to the loop
+starts one more iteration.
+
+-}
+
 firstNonReservedAddress :: MasmAddr
 firstNonReservedAddress = branchCounter + 1
 
