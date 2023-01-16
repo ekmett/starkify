@@ -167,15 +167,6 @@ toMASM m = do
         types :: Vector W.FuncType
         types = V.fromList $ W.types m
 
-        isEmptyFun :: Function -> Bool
-        isEmptyFun fun@(DefinedFun (W.Function _ _ []))
-                = null $ W.params (functionType fun)
-        isEmptyFun _ = False
-
-        emptyFunctions :: Set Int
-        emptyFunctions = Set.fromList $ V.toList $ V.findIndices isEmptyFun allFunctions
-
-
         functionType :: Function -> W.FuncType
         -- Function indices are checked by the wasm library and will always be in range.
         functionType (ImportedFun (W.Import _ _ (W.ImportFunc idx))) = types ! fromIntegral idx
@@ -264,7 +255,6 @@ toMASM m = do
         fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
         fun2MASM (Right idx) = case allFunctions ! idx of
             f@(ImportedFun i) -> inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
-            fun | isEmptyFun fun -> return Nothing
             DefinedFun (W.Function typ localsTys body) -> inContext (InFunction idx) $ do
               let wasm_args = W.params (types ! fromIntegral typ)
                   wasm_locals = localsTys
@@ -356,13 +346,7 @@ toMASM m = do
             W.FuncType params res -> do
               params' <- checkTypes params
               res' <- checkTypes res
-              let instrs =
-                    if Set.member i emptyFunctions
-                      then
-                        -- Comment what empty function we would have called.
-                        [M.comment . M.runPPMasm $ M.ppInstr $ M.Exec $ procName (Right i)]
-                      else [M.Exec $ procName (Right i)]
-              typed (reverse params') res' instrs
+              typed (reverse params') res' [M.Exec $ procName (Right i)]
         translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
         translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
