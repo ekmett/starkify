@@ -341,12 +341,12 @@ toMASM m = do
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
         translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
-        translateInstr _ (W.Call idx) = let i = fromIntegral idx in
-          case functionType (allFunctions ! i) of
-            W.FuncType params res -> do
-              params' <- checkTypes params
-              res' <- checkTypes res
-              typed (reverse params') res' [M.Exec $ procName (Right i)]
+        translateInstr _ (W.Call idx) = do
+          let i = fromIntegral idx
+              W.FuncType params res = functionType (allFunctions ! i)
+          params' <- checkTypes params
+          res' <- checkTypes res
+          typed (reverse params') res' [M.Exec $ procName (Right i)]
         translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
         translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
