@@ -20,6 +20,7 @@ import Language.Wasm.Validate qualified  as W
 
 import Data.Text.Lazy qualified as LT
 import Data.Word
+import W2M.Common ( ModuleInfo(..) )
 
 newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
@@ -45,8 +46,9 @@ bad e = do
 
 data Block = Block | Loop | If deriving Show
 
-data Ctx =
-    InFunction Int -- func id
+data Ctx
+  = InModule { moduleInfo :: ModuleInfo }
+  | InFunction Int -- func id
   | GlobalsInit
   | DatasInit
   | Import
@@ -59,6 +61,15 @@ data Ctx =
 inContext :: Ctx -> Validation e a -> Validation e a
 inContext c = local (c:)
 
+getModuleInfo :: V ModuleInfo
+getModuleInfo = do
+  ctx <- ask
+  let isInModule InModule {moduleInfo} = Just moduleInfo
+      isInModule _ = Nothing
+  case asum $ isInModule <$> ctx of
+    Nothing -> bad NotInModule
+    Just moduleInfo -> pure moduleInfo
+
 blockDepth :: Validation e Int
 blockDepth = length . filter isBlock <$> ask
   where isBlock (InBlock {}) = True
@@ -67,6 +78,7 @@ blockDepth = length . filter isBlock <$> ask
 data ErrorData
   = FPOperation String
   | GlobalMut W.ValueType
+  | NotInModule
   | NoMain
   | StdValidation W.ValidationError
   | UnsupportedInstruction (W.Instruction Natural)
@@ -173,6 +185,7 @@ ppErrData (GlobalMut t) = "unsupported global mutable variable of type: " ++
      W.F32 -> "32 bits floating point"
      W.F64 -> "64 bits floating point"
   )
+ppErrData NotInModule = "Trying to access module info when no module info has been set."
 ppErrData NoMain = "No start function or 'main' function found in WASM module, cannot proceed."
 ppErrData (StdValidation e) = "standard validator issue: " ++ show e
 ppErrData (UnsupportedInstruction i) = "unsupported WASM instruction: " ++ show i
@@ -211,6 +224,7 @@ ppErr e =
   where red s = "\ESC[0;31m" ++ s ++ "\ESC[0m"
 
 ppErrCtx :: Ctx -> String
+ppErrCtx (InModule _) = "in module"
 ppErrCtx (InFunction i) = "of function " ++ show i
 ppErrCtx DatasInit = "in data section"
 ppErrCtx GlobalsInit = "in globals initialisation"

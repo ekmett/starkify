@@ -19,7 +19,7 @@ import Data.Functor ((<&>))
 import Data.List (stripPrefix, sortOn)
 import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Maybe (catMaybes, maybeToList)
+import Data.Maybe (catMaybes, maybeToList, fromMaybe)
 import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
 import Data.Text.Lazy qualified as T
@@ -76,20 +76,58 @@ globalTypeToValue :: W.GlobalType -> W.ValueType
 globalTypeToValue (W.Const vt) = vt
 globalTypeToValue (W.Mut vt) = vt
 
+getExports :: V [W.Export]
+getExports = exports <$> getModuleInfo
+
+getTypes :: V (Vector W.FuncType)
+getTypes = types <$> getModuleInfo
+
+getType :: Integral ti => ti -> V W.FuncType
+getType ti = do
+  types <- getTypes
+  pure $ types ! fromIntegral ti
+
+getFunctions :: V (Vector Function)
+getFunctions = functions <$> getModuleInfo
+
+getMemBeginning :: V MasmAddr
+getMemBeginning = memBeginning <$> getModuleInfo
+
+getGlobals :: V [W.Global]
+getGlobals = globals <$> getModuleInfo
+
+getGlobalsAddrMap :: V (Vector MasmAddr)
+getGlobalsAddrMap = globalsAddrMap <$> getModuleInfo
+
+getGlobalAddr :: Integral k => k -> V MasmAddr
+getGlobalAddr k = do
+  globalsAddrMap <- getGlobalsAddrMap
+  pure $ globalsAddrMap ! fromIntegral k
+
 toMASM :: W.Module -> V M.Module
-toMASM m = do
+toMASM m =
+  inContext (InModule $
+    ModuleInfo types allFunctions (W.exports m) (W.globals m) memBeginning globalsAddrMap) $ do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
   globalsInit <- inContext GlobalsInit getGlobalsInit
   datasInit <- inContext DatasInit getDatasInit
   when (null entryFunctions) badNoMain
-  procs <- catMaybes <$> traverse (\ idx -> fmap (procName idx,) <$> fun2MASM idx) (toList sortedFunctions)
+  procs <- catMaybes <$> traverse
+    (\idx -> (liftA2 . liftA2) (,) (Just <$> procName idx) (fun2MASM idx))
+    sortedFunctions
   methodInits <- sequence [ concat <$> traverse translateGlobals (WASI.init method) | (_, Left method) <- procs ]
   let (procNames, procs') = unzip $ fmap (second translateProc) procs
+
+  entryProcNames <- traverse procName entryFunctions
 
   M.Module ["std::sys", "std::math::u64"]
     <$> (zip procNames <$> sequence procs')
     -- TODO: Do we need to perform stack cleanup even if proc_exit is invoked?
-    <*> return (M.Program (globalsInit ++ datasInit ++ concat methodInits ++ fmap (M.Exec . procName) entryFunctions))
+    <*> return (M.Program $
+      globalsInit
+      ++ datasInit
+      ++ concat methodInits
+      ++ fmap M.Exec entryProcNames)
 
   where wasiGlobals :: [Text]
         wasiGlobals = [ g
@@ -140,9 +178,6 @@ toMASM m = do
         exportedFunctions :: [(FunName, W.FuncIndex)]
         exportedFunctions = [(name, idx) | (W.Export name (W.ExportFunc idx)) <- W.exports m]
 
-        exportedName :: W.FuncIndex -> Maybe FunName
-        exportedName i = lookup i [(idx, name) | (W.Export name (W.ExportFunc idx)) <- W.exports m]
-
         startFunIdx
           | Just (W.StartFunction k) <- W.start m = Just k
           | otherwise = Nothing
@@ -172,8 +207,6 @@ toMASM m = do
         getGlobalInit k g =
           translateInstrs mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k]) 0
 
-        getGlobalTy k = globalTypeToValue . W.globalType $ W.globals m !! fromIntegral k
-
         -- "Functions are referenced through function indices, starting with the smallest index not referencing a function import."
         --                                              (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-module)
         -- "Definitions are referenced with zero-based indices."
@@ -186,75 +219,6 @@ toMASM m = do
 
         types :: Vector W.FuncType
         types = V.fromList $ W.types m
-
-        functionType :: Function -> W.FuncType
-        -- Function indices are checked by the wasm library and will always be in range.
-        functionType (ImportedFun (W.Import _ _ (W.ImportFunc idx))) = types ! fromIntegral idx
-        functionType (DefinedFun (W.Function {funcType})) = types ! fromIntegral funcType
-        functionType _ = error "function type of primitive starkify function?"
-
-        -- TODO: Uniquify names if necessary (import/export conflicts or exported names like "f1").
-        procName :: Either PrimFun Int -> M.ProcName
-        procName (Left f) = f
-        procName (Right i) = T.take 100 $ fixName procName'
-          where procName' = case allFunctions ! i of
-                              ImportedFun (W.Import mo n _) -> mo <> "__" <> n
-                              _ -> case exportedName (fromIntegral i) of
-                                     Just n -> n
-                                     Nothing -> "f" <> T.pack (show i)
-                fixName "" = "z"
-                fixName n = if isAsciiLower (T.head n)
-                              then n
-                              else fixName "" <> n
-
-        branch :: Natural -> V [M.Instruction]
-        branch idx = do
-          -- Clean up the stack.
-          stack <- stackFromBlockN idx
-          t <- blockNBranchType idx
-          let resultStackSize = sum $ fmap numCells t
-              drop' = case resultStackSize of
-                        0 -> [M.Drop]
-                        1 -> [M.Swap 1, M.Drop]
-                        _ -> [M.MoveUp (fromIntegral resultStackSize), M.Drop]
-          if resultStackSize >= M.accessibleStackDepth
-            then bad $ BlockResultTooLarge resultStackSize
-            else pure $ concat (replicate (length stack - resultStackSize) drop') <>
-                        -- Set the branch counter.
-                        [ M.Push (fromIntegral idx + 1)
-                        , M.MemStore (Just branchCounter)
-                        ]
-
-        blockResultType :: W.BlockType -> W.ResultType
-        blockResultType (W.Inline Nothing) = []
-        blockResultType (W.Inline (Just t')) = [t']
-        blockResultType (W.TypeIndex ti) = W.results $ types ! fromIntegral ti
-
-        blockParamsType :: W.BlockType -> W.ParamsType
-        blockParamsType (W.Inline _) = []
-        blockParamsType (W.TypeIndex ti) = W.params $ types ! fromIntegral ti
-
-        blockNBranchType :: Natural -> V W.ResultType
-        blockNBranchType frames = asks (f frames)
-          where f :: Natural -> [Ctx] -> W.ResultType
-                f 0 (InBlock Block t _:_) = blockResultType t
-                f 0 (InBlock Loop t _:_) = blockParamsType t
-                f n (InBlock {}:ctxs) = f (n-1) ctxs
-                f _ (InFunction idx:_) = W.results (functionType (allFunctions ! idx))
-                f n (_:ctxs) = f n ctxs
-                f n [] = error $
-                  "Asked to go up " ++ show frames ++ " blocks, "
-                  ++ "but we only have " ++ show (frames - n) ++ " of context."
-
-        stackFromBlockN :: Natural -> V W.ResultType
-        stackFromBlockN n = do
-          stack <- get
-          asks ((stack <>) . f n)
-          where f 0 _ = []
-                f n' (InBlock _ _ s:ctxs) = if n' == 1 then s else s <> f (n'-1) ctxs
-                f _ (InFunction _:_) = []
-                f n' (_:ctxs) = f n' ctxs
-                f _ [] = []
 
         fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
         fun2MASM (Right idx) = case allFunctions ! idx of
@@ -297,28 +261,28 @@ toMASM m = do
         translateInstrs a (i@(W.Block t body):is) k = do
           stack <- get
           body' <- inContext (InInstruction k i) $ inContext (InBlock Block t stack) $
-            put (blockParamsType t) >> translateInstrs a body 0
-          put (blockResultType t <> stack)
+            blockParamsType t >>= put >> translateInstrs a body 0
+          put . (<> stack) =<< blockResultType t
           is' <- continue i (translateInstrs a is (k+1))
           pure $ body' <> is'
         translateInstrs a (i@(W.Loop t body):is) k = do
           stack <- get
           body' <- inContext (InInstruction k i) $ inContext (InBlock Loop t stack) $
-            put (blockParamsType t) >> translateInstrs a body 0
-          put (blockResultType t <> stack)
+            blockParamsType t >>= put >> translateInstrs a body 0
+          put . (<> stack) =<< blockResultType t
           is' <- continue i (translateInstrs a is (k+1))
           pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
         translateInstrs a (i@(W.If t tb fb):is) k = do
+          params <- blockParamsType t
           stack <- get
-          (tb', fb') <- inContext (InInstruction k i) $ do
-            (,) <$> inContext (InBlock If t stack) (put params >> translateInstrs a tb 0)
+          body <- inContext (InInstruction k i) $ do
+             M.If <$> inContext (InBlock If t stack) (put params >> translateInstrs a tb 0)
                 <*> inContext (InBlock If t stack) (put params >> translateInstrs a fb 0)
-          put (blockResultType t <> stack)
+          put . (<> stack) =<< blockResultType t
           is' <- continue i (translateInstrs a is (k+1))
-          let body' = [M.NEq (Just 0), M.If tb' fb']
+          let body' = [M.NEq (Just 0), body]
           pure $ body' <> is'
 
-          where params = blockParamsType t
         translateInstrs _ (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
         translateInstrs a (i@(W.BrIf idx):is) k = typedV [W.I32] [] $ do
           br <- inContext (InInstruction k i) $ branch idx
@@ -342,391 +306,491 @@ toMASM m = do
           [M.comment $ show i, M.Push 0, M.Assert]
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
-        translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
-        translateInstr _ W.Nop = pure []
-        translateInstr _ (W.Call idx) = do
-          let i = fromIntegral idx
-              W.FuncType params res = functionType (allFunctions ! i)
-          params' <- checkTypes params
-          res' <- checkTypes res
-          typed (reverse params') res' [M.Exec $ procName (Right i)]
-        translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
-        translateInstr _ (W.IUnOp bitsz op) = translateIUnOp bitsz op
-        translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
-        translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
-        translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
-        translateInstr _ W.Select = asum
-          [ typed [W.I32, W.I32, W.I32] [W.I32] oneCell
-          , typed [W.I32, W.F32, W.F32] [W.F32] oneCell
-          , typed [W.I32, W.I64, W.I64] [W.I64] twoCells
-          ]
-          where
-            oneCell = [M.Eq (Just 0), M.CDrop]
-            twoCells =
-              [ M.NEq (Just 0)       -- [c, f1, f2, t1, t2, ...]
-              , M.If                 -- [f1, f2, t1, t2, ...]
-                [ M.Drop, M.Drop ]   -- [t1, t2, ...]
-                [ M.MoveUp 2, M.Drop -- [f1, f2, t2, ...]
-                , M.MoveUp 2, M.Drop -- [f1, f2, ...]
+exportedName :: Integral i => i -> V (Maybe FunName)
+exportedName i = do
+  exports <- getExports
+  return $ lookup (fromIntegral i) [(idx, name) | (W.Export name (W.ExportFunc idx)) <- exports]
+
+-- TODO: Uniquify names if necessary (import/export conflicts or exported names like "f1").
+procName :: Either PrimFun Int -> V M.ProcName
+procName (Left f) = pure f
+procName (Right i) = do
+  fmap (T.take 100 . fixName) $ getFunction i >>= \case
+    ImportedFun (W.Import mo n _) -> pure $ mo <> "__" <> n
+    _ -> exportedName i <&> fromMaybe ("f" <> T.pack (show i))
+  where
+        fixName "" = "z"
+        fixName n = if isAsciiLower (T.head n)
+                      then n
+                      else fixName "" <> n
+
+getGlobalTy :: Integral k => k -> V W.ValueType
+getGlobalTy k = do
+  globals <- getGlobals
+  pure $ globalTypeToValue . W.globalType $ globals !! fromIntegral k
+
+translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
+translateInstr _ W.Nop = pure []
+translateInstr _ (W.Call idx) = do
+  W.FuncType params res <- functionType =<< getFunction idx
+  params' <- checkTypes params
+  res' <- checkTypes res
+  name <- procName $ Right $ fromIntegral idx
+  typed (reverse params') res' [M.Exec name]
+translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
+translateInstr _ (W.IUnOp bitsz op) = translateIUnOp bitsz op
+translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
+translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
+translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
+translateInstr _ W.Select = asum
+  [ typed [W.I32, W.I32, W.I32] [W.I32] oneCell
+  , typed [W.I32, W.F32, W.F32] [W.F32] oneCell
+  , typed [W.I32, W.I64, W.I64] [W.I64] twoCells
+  ]
+  where
+    oneCell = [M.Eq (Just 0), M.CDrop]
+    twoCells =
+      [ M.NEq (Just 0)       -- [c, f1, f2, t1, t2, ...]
+      , M.If                 -- [f1, f2, t1, t2, ...]
+        [ M.Drop, M.Drop ]   -- [t1, t2, ...]
+        [ M.MoveUp 2, M.Drop -- [f1, f2, t2, ...]
+        , M.MoveUp 2, M.Drop -- [f1, f2, ...]
+        ]
+      ]
+translateInstr _ (W.I32Load (W.MemArg offset _align)) = do
+  memBeginning <- getMemBeginning
+  typed [W.I32] [W.I32]
+    -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
+    [ M.Push 4
+    , M.IDiv
+    , M.Push (fromIntegral offset `div` 4)
+    , M.IAdd
+    , M.Push memBeginning
+    , M.IAdd
+    , M.MemLoad Nothing
+    ]
+translateInstr _ (W.I32Store (W.MemArg offset _align)) = do
+  memBeginning <- getMemBeginning
+  -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
+  typed [W.I32, W.I32] []
+    -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
+    [ M.Swap 1
+    , M.Push 4
+    , M.IDiv
+    , M.Push (fromIntegral offset `div` 4)
+    , M.IAdd
+    , M.Push memBeginning
+    , M.IAdd
+    , M.MemStore Nothing
+    ]
+translateInstr _ (W.I32Load8U (W.MemArg offset _align)) = do
+  memBeginning <- getMemBeginning
+  typed [W.I32] [W.I32]
+    [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
+    , M.IAdd                       -- [byte_addr+offset, ...]
+    , M.IDivMod (Just 4)           -- [r, q, ...]
+                                  -- where byte_addr+offset = 4*q + r
+    , M.Swap 1                     -- [q, r, ...]
+    , M.Push memBeginning
+    , M.IAdd                       -- [memBeginning+q, r, ...]
+    , M.MemLoad Nothing            -- [v, r, ...]
+    , M.Swap 1                     -- [r, v, ...]
+    -- we have an i32 (v), but we need just the 8 bits between spots 8*r and 8*r+7
+    -- so we AND with the right mask and shift the result right by 8*r bits.
+    -- (v & mask) << (8*r) gives us (as an i32) the value of the 8-bits starting
+    -- at position 8*r. e.g (with lowest bits on the left):
+    -- v    = xxxxxxxx|abcdefgh|xxxxxxxx|xxxxxxxx
+    -- mask = 00000000|11111111|00000000|00000000
+    -- and  = 00000000|abcdefgh|00000000|00000000
+    -- res  = abcdefgh|00000000|00000000|00000000
+    -- note: 11111111 is 255
+    , M.Push 8, M.IMul     -- [8*r, v, ...]
+    , M.Swap 1, M.Dup 1    -- [8*r, v, 8*r, ...]
+    , M.Push 255, M.Swap 1 -- [8*r, 255, v, 8*r...]
+    , M.IShL               -- [mask, v, 8*r, ...]
+    , M.IAnd               -- [and, 8*r, ...]
+    , M.Swap 1, M.IShR     -- [res, ...]
+    ]
+translateInstr a (W.I32Load8S mem) = do
+  loadInstrs <- translateInstr a (W.I32Load8U mem)
+  sigInstrs <- typed [W.I32] [W.I32]         -- [v, ...]
+            [ M.Dup 0                         -- [v, v, ...]
+            , M.Push 128, M.IGte              -- [v >= 128, v, ...]
+            , M.If                            -- [v, ...]
+                [ M.Push 255, M.Swap 1        -- [v, 255, ...]
+                , M.ISub, M.Push 1, M.IAdd    -- [255 - v + 1, ...]
+                , M.Push 4294967295           -- [4294967295, 255 - v + 1, ...]
+                , M.Swap 1, M.ISub            -- [4294967295 - (255 - v + 1), ...]
+                , M.Push 1, M.IAdd            -- [4294967295 - (255 - v + 1) + 1, ...]
                 ]
-              ]
-        translateInstr _ (W.I32Load (W.MemArg offset _align)) = typed [W.I32] [W.I32]
-            -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
-                   [ M.Push 4
-                   , M.IDiv
-                   , M.Push (fromIntegral offset `div` 4)
-                   , M.IAdd
-                   , M.Push memBeginning
-                   , M.IAdd
-                   , M.MemLoad Nothing
-                   ]
-        translateInstr _ (W.I32Store (W.MemArg offset _align)) =
-          -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
-            typed [W.I32, W.I32] []
-            -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
-                   [ M.Swap 1
-                   , M.Push 4
-                   , M.IDiv
-                   , M.Push (fromIntegral offset `div` 4)
-                   , M.IAdd
-                   , M.Push memBeginning
-                   , M.IAdd
-                   , M.MemStore Nothing
-                   ]
-        translateInstr _ (W.I32Load8U (W.MemArg offset _align)) =
-            typed [W.I32] [W.I32]
-                   [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
-                   , M.IAdd                       -- [byte_addr+offset, ...]
-                   , M.IDivMod (Just 4)           -- [r, q, ...]
-                                                  -- where byte_addr+offset = 4*q + r
-                   , M.Swap 1                     -- [q, r, ...]
-                   , M.Push memBeginning
-                   , M.IAdd                       -- [memBeginning+q, r, ...]
-                   , M.MemLoad Nothing            -- [v, r, ...]
-                   , M.Swap 1                     -- [r, v, ...]
-                   -- we have an i32 (v), but we need just the 8 bits between spots 8*r and 8*r+7
-                   -- so we AND with the right mask and shift the result right by 8*r bits.
-                   -- (v & mask) << (8*r) gives us (as an i32) the value of the 8-bits starting
-                   -- at position 8*r. e.g (with lowest bits on the left):
-                   -- v    = xxxxxxxx|abcdefgh|xxxxxxxx|xxxxxxxx
-                   -- mask = 00000000|11111111|00000000|00000000
-                   -- and  = 00000000|abcdefgh|00000000|00000000
-                   -- res  = abcdefgh|00000000|00000000|00000000
-                   -- note: 11111111 is 255
-                   , M.Push 8, M.IMul     -- [8*r, v, ...]
-                   , M.Swap 1, M.Dup 1    -- [8*r, v, 8*r, ...]
-                   , M.Push 255, M.Swap 1 -- [8*r, 255, v, 8*r...]
-                   , M.IShL               -- [mask, v, 8*r, ...]
-                   , M.IAnd               -- [and, 8*r, ...]
-                   , M.Swap 1, M.IShR     -- [res, ...]
-                   ]
-        translateInstr a (W.I32Load8S mem) = do
-          loadInstrs <- translateInstr a (W.I32Load8U mem)
-          sigInstrs <- typed [W.I32] [W.I32]         -- [v, ...]
-                   [ M.Dup 0                         -- [v, v, ...]
-                   , M.Push 128, M.IGte              -- [v >= 128, v, ...]
-                   , M.If                            -- [v, ...]
-                       [ M.Push 255, M.Swap 1        -- [v, 255, ...]
-                       , M.ISub, M.Push 1, M.IAdd    -- [255 - v + 1, ...]
-                       , M.Push 4294967295           -- [4294967295, 255 - v + 1, ...]
-                       , M.Swap 1, M.ISub            -- [4294967295 - (255 - v + 1), ...]
-                       , M.Push 1, M.IAdd            -- [4294967295 - (255 - v + 1) + 1, ...]
-                       ]
-                       [] -- if the 32 bits of v encode a positive 8 bits number, nothing to do
-                   ]
-          pure $ loadInstrs <> sigInstrs
-        translateInstr _ (W.I32Store8 (W.MemArg offset _align)) =
-          -- we have an 8-bit value stored in an i32, e.g (lowest on the left):
-          -- i   = abcdefgh|00000000|00000000|00000000
-          -- there's an i32 value stored at addr q, e.g:
-          -- v   = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx
-          -- and we want to update the 8*r to 8*r+7 bits of v with
-          -- the first 8 bits of i, so in the example ending with:
-          -- res = xxxxxxxx|abcdefgh|xxxxxxxx|xxxxxxxx
-          -- we get there by shifting i by 8*r bits to the "left":
-          -- i'  = 00000000|abcdefgh|00000000|00000000
-          -- setting free the relevant bits in v:
-          -- v'  = xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
-          -- and storing v' | i'
-            typed [W.I32, W.I32] []
-                   [ M.Swap 1                     -- [byte_addr, i, ...]
-                   , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
-                   , M.IAdd                       -- [byte_addr+offset, i, ...]
-                   , M.IDivMod (Just 4)           -- [r, q, i, ...]
-                                                  -- where byte_addr+offset = 4*q + r
-                   , M.Push 8, M.IMul             -- [8*r, q, i, ...]
-                   , M.Dup 0                      -- [8*r, 8*r, q, i, ...]
-                   , M.Push 255, M.Swap 1         -- [8*r, 255, 8*r, q, i, ...]
-                   , M.IShL, M.INot               -- [mask, 8*r, q, i, ...]
-                   , M.Swap 2                     -- [q, 8*r, mask, i, ...]
-                   , M.Push memBeginning
-                   , M.IAdd                       -- [memBeginning+q, 8*r, mask, i, ...]
-                   , M.Dup 0                      -- [memBeginning+q, memBeginning+q, 8*r, mask, i, ...]
-                   , M.MemLoad Nothing            -- [v, memBeginning+q, 8*r, mask, i, ...]
-                   , M.Swap 1, M.Swap 3           -- [mask, v, 8*r, memBeginning+q, i, ...]
-                   , M.IAnd                       -- [v', 8*r, memBeginning+q, i, ...]
-                   , M.Swap 3                     -- [i, 8*r, memBeginning+q, v', ...]
-                   , M.Swap 1                     -- [8*r, i, memBeginning+q, v', ...]
-                   , M.IShL                       -- [i', memBeginning+q, v', ...]
-                   , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
-                   , M.IOr                        -- [final_val, memBeginning+q, ...]
-                   , M.Swap 1                     -- [memBeginning+q, final_val, ...]
-                   , M.MemStore Nothing           -- [...]
-                   ]
-        translateInstr _ (W.I32Load16U (W.MemArg offset _align)) = typed [W.I32] [W.I32]
-                   [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
-                   , M.IAdd                       -- [byte_addr+offset, ...]
-                   , M.IDivMod (Just 4)           -- [r, q, ...]
-                                                  -- where byte_addr+offset = 4*q + r
-                   , M.Swap 1                     -- [q, r, ...]
-                   , M.Push memBeginning
-                   , M.IAdd                       -- [memBeginning+q, r, ...]
-                   , M.MemLoad Nothing            -- [v, r, ...]
-                   , M.Swap 1                     -- [r, v, ...]
-                   -- we have an i32 (v), but we need just the 16 bits between spots 8*r and 8*r+15
-                   -- so we AND with the right mask and shift the result right by 8*r bits.
-                   -- (v & mask) << (8*r) gives us (as an i32) the value of the 16-bits starting
-                   -- at position 8*r. e.g (with lowest bits on the left):
-                   -- v    = xxxxxxxx|abcdefgh|ijklmnop|xxxxxxxx
-                   -- mask = 00000000|11111111|11111111|00000000
-                   -- and  = 00000000|abcdefgh|ijklmnop|00000000
-                   -- res  = abcdefgh|ijklmnop|00000000|00000000
-                   -- note: 11111111|11111111 is 65535
-                   , M.Push 8, M.IMul       -- [8*r, v, ...]
-                   , M.Swap 1, M.Dup 1      -- [8*r, v, 8*r, ...]
-                   , M.Push 65535, M.Swap 1 -- [8*r, 65535, v, 8*r...]
-                   , M.IShL                 -- [mask, v, 8*r, ...]
-                   , M.IAnd                 -- [and, 8*r, ...]
-                   , M.Swap 1, M.IShR       -- [res, ...]
-                   ]
-        translateInstr _ (W.I32Store16 (W.MemArg offset _align))
-          | mod offset 4 == 3 = error "offset = 3!"
-          | otherwise = typed [W.I32, W.I32] []
-                   [ M.Swap 1                     -- [byte_addr, i, ...]
-                   , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
-                   , M.IAdd                       -- [byte_addr+offset, i, ...]
-                   , M.IDivMod (Just 4)           -- [r, q, i, ...]
-                                                  -- where byte_addr+offset = 4*q + r
-                   , M.Push 8, M.IMul             -- [8*r, q, i, ...]
-                   , M.Dup 0                      -- [8*r, 8*r, q, i, ...]
-                   , M.Push 65535, M.Swap 1       -- [8*r, 65535, 8*r, q, i, ...]
-                   , M.IShL, M.INot               -- [mask, 8*r, q, i, ...]
-                   , M.Swap 2                     -- [q, 8*r, mask, i, ...]
-                   , M.Push memBeginning
-                   , M.IAdd                       -- [memBeginning+q, 8*r, mask, i, ...]
-                   , M.Dup 0                      -- [memBeginning+q, memBeginning+q, 8*r, mask, i, ...]
-                   , M.MemLoad Nothing            -- [v, memBeginning+q, 8*r, mask, i, ...]
-                   , M.Swap 1, M.Swap 3           -- [mask, v, 8*r, memBeginning+q, i, ...]
-                   , M.IAnd                       -- [v', 8*r, memBeginning+q, i, ...]
-                   , M.Swap 3                     -- [i, 8*r, memBeginning+q, v', ...]
-                   , M.Swap 1                     -- [8*r, i, memBeginning+q, v', ...]
-                   , M.IShL                       -- [i', memBeginning+q, v', ...]
-                   , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
-                   , M.IOr                        -- [final_val, memBeginning+q, ...]
-                   , M.Swap 1                     -- [memBeginning+q, final_val, ...]
-                   , M.MemStore Nothing           -- [...]
-                   ]
-        -- locals
-        translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
-          Just (loct, is) -> typed [] [loct] (map M.LocLoad is)
-          _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
-
-        translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
-          Just (loct, as) -> typed [loct] [] (map M.LocStore $ reverse as)
-          _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
-        translateInstr localAddrs (W.TeeLocal k) =
-          (<>) <$> translateInstr localAddrs (W.SetLocal k)
-               <*> translateInstr localAddrs (W.GetLocal k)
-
-        -- globals
-        translateInstr _ (W.GetGlobal k) = case getGlobalTy k of
-          W.I32 -> typed [] [W.I32]
-              [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k]
-          W.I64 -> typed [] [W.I64]
-              [ M.MemLoad . Just $ globalsAddrMap V.! fromIntegral k
-              , M.MemLoad . Just $ (globalsAddrMap V.! fromIntegral k) + 1
-              ]
-          t -> error $ "unsupported type: " ++ show t
-        translateInstr _ (W.SetGlobal k) = case getGlobalTy k of
-          W.I32 -> typed [W.I32] []
-              [ M.MemStore . Just $ globalsAddrMap V.! fromIntegral k ]
-          W.I64 -> typed [W.I64] []
-              [ M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k) + 1
-              , M.MemStore . Just $ (globalsAddrMap V.! fromIntegral k)
-              ]
-          t -> error $ "unsupported type: " ++ show t
-
-        -- https://maticnetwork.github.io/miden/user_docs/stdlib/math/u64.html
-        -- 64 bits integers are emulated by separating the high and low 32 bits.
-        translateInstr _ (W.I64Const k) = typed [] [W.I64]
-            [ M.Push k_lo
-            , M.Push k_hi
+                [] -- if the 32 bits of v encode a positive 8 bits number, nothing to do
             ]
-          where FakeW64 k_hi k_lo = toFakeW64 k
-        translateInstr _ (W.I64Load (W.MemArg offset _align))
-          | mod offset 4 /= 0 = error "i64 load"
-          | otherwise         =
-          -- we need to turn [byte_addr, ...] of wasm into
-          -- [u32_addr, ...] for masm, and then call mem_load
-          -- twice (once at u32_addr, once at u32_addr+1)
-          -- to get lo and hi 32 bits of i64 value respectively.
-          --
-          -- u32_addr = (byte_addr / 4) + (offset / 4) + memBeginning
-          typed [W.I32] [W.I64]
-              [ M.Push 4, M.IDiv
-              , M.Push (fromIntegral offset `div` 4)
-              , M.IAdd
-              , M.Push memBeginning, M.IAdd -- [addr, ...]
-              , M.Dup 0 -- [addr, addr, ...]
-              , M.MemLoad Nothing -- [lo, addr, ...]
-              , M.Swap 1 -- [addr, lo, ...]
-              , M.Push 1, M.IAdd -- [addr+1, lo, ...]
-              , M.MemLoad Nothing -- [hi, lo, ...]
-              ]
-        translateInstr _ (W.I64Store (W.MemArg offset _align))
-          | mod offset 4 /= 0 = error "i64 store"
-          | otherwise   =
-          -- we need to turn [val_hi, val_low, byte_addr, ...] of wasm into
-          -- [u32_addr, val64_hi, val64_low, ...] for masm,
-          -- and the call mem_store twice
-          -- (once at u32_addr, once at u32_addr+1)
-          -- to get hi and lo 32 bits of i64 value into memory.
-          typed [W.I64, W.I32] []
-              [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
-              , M.Push 4, M.IDiv
-              , M.Push (fromIntegral offset `div` 4)
-              , M.IAdd
-              , M.Push memBeginning
-              , M.IAdd -- [addr, hi, lo, ...]
-              , M.Dup 0 -- [addr, addr, hi, lo, ...]
-              , M.Swap 2, M.Swap 1 -- [addr, hi, addr, lo, ...]
-              , M.Push 1, M.IAdd -- [addr+1, hi, addr, lo, ...]
-              , M.MemStore Nothing -- [addr, lo, ...]
-              , M.MemStore Nothing -- [...]
-              ]
-        translateInstr _ (W.I64Load8U (W.MemArg offset _align)) =
-            typed [W.I32] [W.I64]                 -- [byte_addr, ...]
-                   [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
-                   , M.IAdd
-                   , M.IDivMod (Just 8)           -- [r, q, ...]
-                                                  --   where byte_addr+offset = 8*q + r
-                   , M.Dup 0, M.Push 3, M.IGt     -- [r > 3, r, q, ...]
-                   , M.MoveUp 2, M.Push 2, M.IMul -- [2*q, r > 3, r, ...]
-                   , M.Push memBeginning          -- [memBeginning, 2*q, r > 3, r, ...]
-                   , M.IAdd                       -- [memBeginning+2*q, r > 3, r, ...]
-                   , M.IAdd                       -- [memBeginning+2*q+(r > 3), r, ...]
-                   , M.MemLoad Nothing            -- [v, r, ...]
-                   , M.Swap 1                     -- [r, v, ...]
-                   , M.Push 4, M.IMod             -- [r `mod` 4, v, ...]
-                   , M.Push 8, M.IMul             -- [8*(r `mod` 4), v, ...]
-                   , M.IShR                       -- [v', ...]
-                   , M.Push 255, M.IAnd           -- [v'', ...]
-                   , M.Push 0                     -- [0, v'', ...]
-                     -- the 8 bits we care about are the 8 lowest of the 32 bits v'' value here,
-                     -- and they need to be the 8 lowest bits of the 0-everywhere-else 64 bits result,
-                     -- so we shift and zero out the appropriate 32 bits we read from memory and push
-                     -- 0 on top to make it represent a 64 bits value
-                   ]
-        translateInstr _ (W.I64Store8 (W.MemArg offset _align)) =
-          -- we have an 8-bit value stored in an i64 (two 32 bits in Miden land),
-          -- e.g (lowest on the left):
-          -- i   = abcdefgh|00000000|00000000|00000000||00000000|00000000|00000000|00000000
-          -- there's an i64 value stored at addr q, e.g:
-          -- v   = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx
-          -- and we want to update the 8*r to 8*r+7 bits of v with
-          -- the first 8 bits of i, so in the example ending with:
-          -- res = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|abcdefgh|xxxxxxxx|xxxxxxxx
-          -- we get there by shifting i by 8*r bits to the "left":
-          -- i'  = 00000000|00000000|00000000|00000000||00000000|abcdefgh|00000000|00000000
-          -- setting free the relevant bits in v:
-          -- v'  = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
-          -- and storing v' | i'
-          --
-          -- TODO: only load, transform and store the limb that's targetted by the memory
-          -- op?
-            typed [W.I64, W.I32] []               -- [i_hi, i_lo, byte_addr, ...]
-                   [ M.MoveUp 2                   -- [byte_addr, i_hi, i_lo, ...]
-                   , M.Push (fromIntegral offset) -- [offset, byte_addr, i_hi, i_lo, ...]
-                   , M.IAdd                       -- [byte_addr+offset, i_hi, i_lo, ...]
-                   , M.IDivMod (Just 8)           -- [r, q, i_hi, i_lo, ...]
-                                                  -- where byte_addr+offset = 8*q + r
+  pure $ loadInstrs <> sigInstrs
+translateInstr _ (W.I32Store8 (W.MemArg offset _align)) = do
+  memBeginning <- getMemBeginning
+  -- we have an 8-bit value stored in an i32, e.g (lowest on the left):
+  -- i   = abcdefgh|00000000|00000000|00000000
+  -- there's an i32 value stored at addr q, e.g:
+  -- v   = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx
+  -- and we want to update the 8*r to 8*r+7 bits of v with
+  -- the first 8 bits of i, so in the example ending with:
+  -- res = xxxxxxxx|abcdefgh|xxxxxxxx|xxxxxxxx
+  -- we get there by shifting i by 8*r bits to the "left":
+  -- i'  = 00000000|abcdefgh|00000000|00000000
+  -- setting free the relevant bits in v:
+  -- v'  = xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
+  -- and storing v' | i'
+  typed [W.I32, W.I32] []
+    [ M.Swap 1                     -- [byte_addr, i, ...]
+    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
+    , M.IAdd                       -- [byte_addr+offset, i, ...]
+    , M.IDivMod (Just 4)           -- [r, q, i, ...]
+                                  -- where byte_addr+offset = 4*q + r
+    , M.Push 8, M.IMul             -- [8*r, q, i, ...]
+    , M.Dup 0                      -- [8*r, 8*r, q, i, ...]
+    , M.Push 255, M.Swap 1         -- [8*r, 255, 8*r, q, i, ...]
+    , M.IShL, M.INot               -- [mask, 8*r, q, i, ...]
+    , M.Swap 2                     -- [q, 8*r, mask, i, ...]
+    , M.Push memBeginning
+    , M.IAdd                       -- [memBeginning+q, 8*r, mask, i, ...]
+    , M.Dup 0                      -- [memBeginning+q, memBeginning+q, 8*r, mask, i, ...]
+    , M.MemLoad Nothing            -- [v, memBeginning+q, 8*r, mask, i, ...]
+    , M.Swap 1, M.Swap 3           -- [mask, v, 8*r, memBeginning+q, i, ...]
+    , M.IAnd                       -- [v', 8*r, memBeginning+q, i, ...]
+    , M.Swap 3                     -- [i, 8*r, memBeginning+q, v', ...]
+    , M.Swap 1                     -- [8*r, i, memBeginning+q, v', ...]
+    , M.IShL                       -- [i', memBeginning+q, v', ...]
+    , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
+    , M.IOr                        -- [final_val, memBeginning+q, ...]
+    , M.Swap 1                     -- [memBeginning+q, final_val, ...]
+    , M.MemStore Nothing           -- [...]
+    ]
+translateInstr _ (W.I32Load16U (W.MemArg offset _align)) = do
+  memBeginning <- getMemBeginning
+  typed [W.I32] [W.I32]
+    [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
+    , M.IAdd                       -- [byte_addr+offset, ...]
+    , M.IDivMod (Just 4)           -- [r, q, ...]
+                                  -- where byte_addr+offset = 4*q + r
+    , M.Swap 1                     -- [q, r, ...]
+    , M.Push memBeginning
+    , M.IAdd                       -- [memBeginning+q, r, ...]
+    , M.MemLoad Nothing            -- [v, r, ...]
+    , M.Swap 1                     -- [r, v, ...]
+    -- we have an i32 (v), but we need just the 16 bits between spots 8*r and 8*r+15
+    -- so we AND with the right mask and shift the result right by 8*r bits.
+    -- (v & mask) << (8*r) gives us (as an i32) the value of the 16-bits starting
+    -- at position 8*r. e.g (with lowest bits on the left):
+    -- v    = xxxxxxxx|abcdefgh|ijklmnop|xxxxxxxx
+    -- mask = 00000000|11111111|11111111|00000000
+    -- and  = 00000000|abcdefgh|ijklmnop|00000000
+    -- res  = abcdefgh|ijklmnop|00000000|00000000
+    -- note: 11111111|11111111 is 65535
+    , M.Push 8, M.IMul       -- [8*r, v, ...]
+    , M.Swap 1, M.Dup 1      -- [8*r, v, 8*r, ...]
+    , M.Push 65535, M.Swap 1 -- [8*r, 65535, v, 8*r...]
+    , M.IShL                 -- [mask, v, 8*r, ...]
+    , M.IAnd                 -- [and, 8*r, ...]
+    , M.Swap 1, M.IShR       -- [res, ...]
+    ]
+translateInstr _ (W.I32Store16 (W.MemArg offset _align)) = do
+  when (mod offset 4 == 3) $ error "offset = 3!"
+  memBeginning <- getMemBeginning
+  typed [W.I32, W.I32] []
+    [ M.Swap 1                     -- [byte_addr, i, ...]
+    , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
+    , M.IAdd                       -- [byte_addr+offset, i, ...]
+    , M.IDivMod (Just 4)           -- [r, q, i, ...]
+                                  -- where byte_addr+offset = 4*q + r
+    , M.Push 8, M.IMul             -- [8*r, q, i, ...]
+    , M.Dup 0                      -- [8*r, 8*r, q, i, ...]
+    , M.Push 65535, M.Swap 1       -- [8*r, 65535, 8*r, q, i, ...]
+    , M.IShL, M.INot               -- [mask, 8*r, q, i, ...]
+    , M.Swap 2                     -- [q, 8*r, mask, i, ...]
+    , M.Push memBeginning
+    , M.IAdd                       -- [memBeginning+q, 8*r, mask, i, ...]
+    , M.Dup 0                      -- [memBeginning+q, memBeginning+q, 8*r, mask, i, ...]
+    , M.MemLoad Nothing            -- [v, memBeginning+q, 8*r, mask, i, ...]
+    , M.Swap 1, M.Swap 3           -- [mask, v, 8*r, memBeginning+q, i, ...]
+    , M.IAnd                       -- [v', 8*r, memBeginning+q, i, ...]
+    , M.Swap 3                     -- [i, 8*r, memBeginning+q, v', ...]
+    , M.Swap 1                     -- [8*r, i, memBeginning+q, v', ...]
+    , M.IShL                       -- [i', memBeginning+q, v', ...]
+    , M.Swap 1, M.Swap 2           -- [v', i', memBeginning+q, ...]
+    , M.IOr                        -- [final_val, memBeginning+q, ...]
+    , M.Swap 1                     -- [memBeginning+q, final_val, ...]
+    , M.MemStore Nothing           -- [...]
+    ]
+-- locals
+translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
+  Just (loct, is) -> typed [] [loct] (map M.LocLoad is)
+  _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
 
-                   , M.Push 8, M.IMul             -- [8*r, q, i_hi, i_lo, ...]
-                   , M.Push 255, M.Push 0         -- [0, 255, 8*r, q, i_hi, i_lo, ...]
-                   , M.Dup 2                      -- [8*r, 0, 255, 8*r, q, i_hi, i_lo, ...]
+translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
+  Just (loct, as) -> typed [loct] [] (map M.LocStore $ reverse as)
+  _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
+translateInstr localAddrs (W.TeeLocal k) =
+  (<>) <$> translateInstr localAddrs (W.SetLocal k)
+        <*> translateInstr localAddrs (W.GetLocal k)
 
-                   , M.IShL64                     -- [(255 << 8*r)_hi, (255 << 8*r)_lo, 8*r, q, i_hi, i_lo, ...]
-                   , M.INot                       -- [mask_hi, (255 << 8*r)_lo, 8*r, q, i_hi, i_lo, ...]
-                   , M.Swap 1, M.INot, M.Swap 1   -- [mask_hi, mask_lo, 8*r, q, i_hi, i_lo, ...]
+-- globals
+translateInstr _ (W.GetGlobal k) = do
+  addr <- getGlobalAddr k
+  getGlobalTy k >>= \case
+    W.I32 -> typed [] [W.I32]
+        [ M.MemLoad $ Just addr]
+    W.I64 -> typed [] [W.I64]
+        [ M.MemLoad $ Just addr
+        , M.MemLoad . Just $ addr + 1
+        ]
+    t -> error $ "unsupported type: " ++ show t
+translateInstr _ (W.SetGlobal k) = do
+  addr <- getGlobalAddr k
+  getGlobalTy k >>= \case
+    W.I32 -> typed [W.I32] []
+        [ M.MemStore . Just $ addr ]
+    W.I64 -> typed [W.I64] []
+        [ M.MemStore . Just $ addr + 1
+        , M.MemStore . Just $ addr
+        ]
+    t -> error $ "unsupported type: " ++ show t
 
-                   , M.MoveUp 2
-                   , M.MoveUp 3                   -- [q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.Push 2, M.IMul             -- [2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+-- https://maticnetwork.github.io/miden/user_docs/stdlib/math/u64.html
+-- 64 bits integers are emulated by separating the high and low 32 bits.
+translateInstr _ (W.I64Const k) = typed [] [W.I64]
+    [ M.Push k_lo
+    , M.Push k_hi
+    ]
+  where FakeW64 k_hi k_lo = toFakeW64 k
+translateInstr _ (W.I64Load (W.MemArg offset _align)) = do
+  when (mod offset 4 /= 0) $ error "i64 load"
+  memBeginning <- getMemBeginning
+  -- we need to turn [byte_addr, ...] of wasm into
+  -- [u32_addr, ...] for masm, and then call mem_load
+  -- twice (once at u32_addr, once at u32_addr+1)
+  -- to get lo and hi 32 bits of i64 value respectively.
+  --
+  -- u32_addr = (byte_addr / 4) + (offset / 4) + memBeginning
+  typed [W.I32] [W.I64]
+    [ M.Push 4, M.IDiv
+    , M.Push (fromIntegral offset `div` 4)
+    , M.IAdd
+    , M.Push memBeginning, M.IAdd -- [addr, ...]
+    , M.Dup 0 -- [addr, addr, ...]
+    , M.MemLoad Nothing -- [lo, addr, ...]
+    , M.Swap 1 -- [addr, lo, ...]
+    , M.Push 1, M.IAdd -- [addr+1, lo, ...]
+    , M.MemLoad Nothing -- [hi, lo, ...]
+    ]
+translateInstr _ (W.I64Store (W.MemArg offset _align)) = do
+  when (mod offset 4 /= 0) $ error "i64 store"
+  memBeginning <- getMemBeginning
+  -- we need to turn [val_hi, val_low, byte_addr, ...] of wasm into
+  -- [u32_addr, val64_hi, val64_low, ...] for masm,
+  -- and the call mem_store twice
+  -- (once at u32_addr, once at u32_addr+1)
+  -- to get hi and lo 32 bits of i64 value into memory.
+  typed [W.I64, W.I32] []
+      [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
+      , M.Push 4, M.IDiv
+      , M.Push (fromIntegral offset `div` 4)
+      , M.IAdd
+      , M.Push memBeginning
+      , M.IAdd -- [addr, hi, lo, ...]
+      , M.Dup 0 -- [addr, addr, hi, lo, ...]
+      , M.Swap 2, M.Swap 1 -- [addr, hi, addr, lo, ...]
+      , M.Push 1, M.IAdd -- [addr+1, hi, addr, lo, ...]
+      , M.MemStore Nothing -- [addr, lo, ...]
+      , M.MemStore Nothing -- [...]
+      ]
+translateInstr _ (W.I64Load8U (W.MemArg offset _align)) = do
+  memBeginning <- getMemBeginning
+  typed [W.I32] [W.I64]                 -- [byte_addr, ...]
+    [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
+    , M.IAdd
+    , M.IDivMod (Just 8)           -- [r, q, ...]
+                                  --   where byte_addr+offset = 8*q + r
+    , M.Dup 0, M.Push 3, M.IGt     -- [r > 3, r, q, ...]
+    , M.MoveUp 2, M.Push 2, M.IMul -- [2*q, r > 3, r, ...]
+    , M.Push memBeginning          -- [memBeginning, 2*q, r > 3, r, ...]
+    , M.IAdd                       -- [memBeginning+2*q, r > 3, r, ...]
+    , M.IAdd                       -- [memBeginning+2*q+(r > 3), r, ...]
+    , M.MemLoad Nothing            -- [v, r, ...]
+    , M.Swap 1                     -- [r, v, ...]
+    , M.Push 4, M.IMod             -- [r `mod` 4, v, ...]
+    , M.Push 8, M.IMul             -- [8*(r `mod` 4), v, ...]
+    , M.IShR                       -- [v', ...]
+    , M.Push 255, M.IAnd           -- [v'', ...]
+    , M.Push 0                     -- [0, v'', ...]
+      -- the 8 bits we care about are the 8 lowest of the 32 bits v'' value here,
+      -- and they need to be the 8 lowest bits of the 0-everywhere-else 64 bits result,
+      -- so we shift and zero out the appropriate 32 bits we read from memory and push
+      -- 0 on top to make it represent a 64 bits value
+    ]
+translateInstr _ (W.I64Store8 (W.MemArg offset _align)) = do
+  memBeginning <- getMemBeginning
+  -- we have an 8-bit value stored in an i64 (two 32 bits in Miden land),
+  -- e.g (lowest on the left):
+  -- i   = abcdefgh|00000000|00000000|00000000||00000000|00000000|00000000|00000000
+  -- there's an i64 value stored at addr q, e.g:
+  -- v   = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx
+  -- and we want to update the 8*r to 8*r+7 bits of v with
+  -- the first 8 bits of i, so in the example ending with:
+  -- res = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|abcdefgh|xxxxxxxx|xxxxxxxx
+  -- we get there by shifting i by 8*r bits to the "left":
+  -- i'  = 00000000|00000000|00000000|00000000||00000000|abcdefgh|00000000|00000000
+  -- setting free the relevant bits in v:
+  -- v'  = xxxxxxxx|xxxxxxxx|xxxxxxxx|xxxxxxxx||xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
+  -- and storing v' | i'
+  --
+  -- TODO: only load, transform and store the limb that's targetted by the memory
+  -- op?
+  typed [W.I64, W.I32] []               -- [i_hi, i_lo, byte_addr, ...]
+    [ M.MoveUp 2                   -- [byte_addr, i_hi, i_lo, ...]
+    , M.Push (fromIntegral offset) -- [offset, byte_addr, i_hi, i_lo, ...]
+    , M.IAdd                       -- [byte_addr+offset, i_hi, i_lo, ...]
+    , M.IDivMod (Just 8)           -- [r, q, i_hi, i_lo, ...]
+                                  -- where byte_addr+offset = 8*q + r
 
-                   , M.Push memBeginning          -- [memBeginning, 2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.IAdd                       -- [memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.Dup 0, M.Dup 0             -- [memBeginning+2*q, memBeginning+2*q, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.MemLoad Nothing            -- [v_lo, memBeginning+2*q, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+    , M.Push 8, M.IMul             -- [8*r, q, i_hi, i_lo, ...]
+    , M.Push 255, M.Push 0         -- [0, 255, 8*r, q, i_hi, i_lo, ...]
+    , M.Dup 2                      -- [8*r, 0, 255, 8*r, q, i_hi, i_lo, ...]
 
-                   , M.Swap 1, M.Push 1, M.IAdd   -- [memBeginning+2*q+1, v_lo, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
-                   , M.MemLoad Nothing            -- [v_hi, v_lo, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+    , M.IShL64                     -- [(255 << 8*r)_hi, (255 << 8*r)_lo, 8*r, q, i_hi, i_lo, ...]
+    , M.INot                       -- [mask_hi, (255 << 8*r)_lo, 8*r, q, i_hi, i_lo, ...]
+    , M.Swap 1, M.INot, M.Swap 1   -- [mask_hi, mask_lo, 8*r, q, i_hi, i_lo, ...]
 
-                   , M.MoveUp 5, M.MoveUp 5       -- [mask_hi, mask_lo, v_hi, v_lo, memBeginning+2*q, 8*r, i_hi, i_lo, ...]
-                   , M.IAnd64                     -- [v'_hi, v'_lo, memBeginning+2*q, 8*r, i_hi, i_lo, ...]
+    , M.MoveUp 2
+    , M.MoveUp 3                   -- [q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+    , M.Push 2, M.IMul             -- [2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
 
-                   , M.MoveUp 5, M.MoveUp 5       -- [i_hi, i_lo, v'_hi, v'_lo, memBeginning+2*q, 8*r, ...]
-                   , M.MoveUp 5                   -- [8*r, i_hi, i_lo, v'_hi, v'_lo, memBeginning+2*q, ...]
-                   , M.IShL64                     -- [i'_hi, i'_lo, v'_hi, v'_lo, memBeginning+2*q, ...]
+    , M.Push memBeginning          -- [memBeginning, 2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+    , M.IAdd                       -- [memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+    , M.Dup 0, M.Dup 0             -- [memBeginning+2*q, memBeginning+2*q, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+    , M.MemLoad Nothing            -- [v_lo, memBeginning+2*q, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
 
-                   , M.IOr64                      -- [res_hi, res_lo, memBeginning+2*q, ...]
+    , M.Swap 1, M.Push 1, M.IAdd   -- [memBeginning+2*q+1, v_lo, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
+    , M.MemLoad Nothing            -- [v_hi, v_lo, memBeginning+2*q, 8*r, mask_hi, mask_lo, i_hi, i_lo, ...]
 
-                   , M.Dup 2, M.Push 1, M.IAdd    -- [memBeginning+2*q+1, res_hi, res_lo, memBeginning+2*q, ...]
-                   , M.MemStore Nothing           -- [res_lo, memBeginning+2*q, ...]
-                   , M.Swap 1                     -- [memBeginning+2*q, res_lo, ...]
-                   , M.MemStore Nothing           -- [...]
-                   ]
+    , M.MoveUp 5, M.MoveUp 5       -- [mask_hi, mask_lo, v_hi, v_lo, memBeginning+2*q, 8*r, i_hi, i_lo, ...]
+    , M.IAnd64                     -- [v'_hi, v'_lo, memBeginning+2*q, 8*r, i_hi, i_lo, ...]
 
-        -- turning an i32 into an i64 in wasm corresponds to pushing 0 on the stack.
-        -- let's call the i32 'i'. before executing this, the stack looks like [i, ...],
-        -- and after like: [0, i, ...].
-        -- Since an i64 'x' on the stack is in Miden represented as [x_hi, x_lo], pushing 0
-        -- effectively grabs the i32 for the low bits and sets the high 32 bits to 0.
-        translateInstr _ W.I64ExtendUI32 = typed [W.I32] [W.I64] [M.Push 0]
-        -- similarly, wrap drops the high 32 bits, which amounts to dropping the tip of the stack
-        -- in miden, going from [v_hi, v_lo, ...] to [v_lo, ...]
-        translateInstr _ W.I32WrapI64 = typed [W.I64] [W.I32] [M.Drop]
-        -- this is a sign-aware extension, so we push 0 or maxBound :: Word32
-        -- depending on whether the 32 bits number is negative or not.
-        translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64] $
-            -- TODO: investigate performance of computing both branches and using select.
-            --       Miden docs suggest it might be faster.
-            [ M.Dup 0                  -- [x, x, ...]
-            ] ++ computeIsNegative ++  -- [x_negative, x, ...]
-            [ M.If
-                [ M.Push maxBound      -- [0b11..1, x, ...]
+    , M.MoveUp 5, M.MoveUp 5       -- [i_hi, i_lo, v'_hi, v'_lo, memBeginning+2*q, 8*r, ...]
+    , M.MoveUp 5                   -- [8*r, i_hi, i_lo, v'_hi, v'_lo, memBeginning+2*q, ...]
+    , M.IShL64                     -- [i'_hi, i'_lo, v'_hi, v'_lo, memBeginning+2*q, ...]
+
+    , M.IOr64                      -- [res_hi, res_lo, memBeginning+2*q, ...]
+
+    , M.Dup 2, M.Push 1, M.IAdd    -- [memBeginning+2*q+1, res_hi, res_lo, memBeginning+2*q, ...]
+    , M.MemStore Nothing           -- [res_lo, memBeginning+2*q, ...]
+    , M.Swap 1                     -- [memBeginning+2*q, res_lo, ...]
+    , M.MemStore Nothing           -- [...]
+    ]
+
+-- turning an i32 into an i64 in wasm corresponds to pushing 0 on the stack.
+-- let's call the i32 'i'. before executing this, the stack looks like [i, ...],
+-- and after like: [0, i, ...].
+-- Since an i64 'x' on the stack is in Miden represented as [x_hi, x_lo], pushing 0
+-- effectively grabs the i32 for the low bits and sets the high 32 bits to 0.
+translateInstr _ W.I64ExtendUI32 = typed [W.I32] [W.I64] [M.Push 0]
+-- similarly, wrap drops the high 32 bits, which amounts to dropping the tip of the stack
+-- in miden, going from [v_hi, v_lo, ...] to [v_lo, ...]
+translateInstr _ W.I32WrapI64 = typed [W.I64] [W.I32] [M.Drop]
+-- this is a sign-aware extension, so we push 0 or maxBound :: Word32
+-- depending on whether the 32 bits number is negative or not.
+translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64] $
+    -- TODO: investigate performance of computing both branches and using select.
+    --       Miden docs suggest it might be faster.
+    [ M.Dup 0                  -- [x, x, ...]
+    ] ++ computeIsNegative ++  -- [x_negative, x, ...]
+    [ M.If
+        [ M.Push maxBound      -- [0b11..1, x, ...]
+        ]
+        [ M.Push 0             -- [0, x, ...]
+        ]
+    ]
+
+translateInstr _ W.I64Eqz = typed [W.I64] [W.I32] [M.IEqz64]
+-- is the top of the WASM stack an i32 or i64, at this point in time?
+-- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
+translateInstr _ W.Drop = withPrefix $ pure . \t -> replicate (numCells t) M.Drop
+
+translateInstr _ W.Unreachable = pure [M.Push 0, M.Assert]
+
+translateInstr _ (W.CallIndirect tyIdx) =
+  getType tyIdx >>= \(W.FuncType paramsTys retTys) -> do
+    params <- checkTypes paramsTys
+    ret    <- checkTypes retTys
+    typed (W.I32:reverse params) ret [M.Exec starkifyCallIndirectName]
+
+-- We always have 2³² memory addresses, or more than the current Wasm we're targeting supports.
+translateInstr _ W.CurrentMemory = typed [] [W.I32] [M.Push 0xFFFF]
+-- Return -1 to indicate that we were unable to grow memory.
+translateInstr _ W.GrowMemory = typed [W.I32] [W.I32] [M.Push 0xFFFFFFFF]
+
+translateInstr _ i = unsupportedInstruction i
+
+getFunction :: Integral fi => fi -> V Function
+getFunction fi = do
+  functions <- getFunctions
+  pure $ functions ! fromIntegral fi
+
+functionType :: Function -> V W.FuncType
+-- Function indices are checked by the wasm library and will always be in range.
+functionType (ImportedFun (W.Import _ _ (W.ImportFunc idx))) = getType idx
+functionType (DefinedFun (W.Function {funcType})) = getType funcType
+functionType _ = error "function type of primitive starkify function?"
+
+blockResultType :: W.BlockType -> V W.ResultType
+blockResultType (W.Inline Nothing) = pure []
+blockResultType (W.Inline (Just t')) = pure [t']
+blockResultType (W.TypeIndex ti) = W.results <$> getType ti
+
+blockParamsType :: W.BlockType -> V W.ParamsType
+blockParamsType (W.Inline _) = pure []
+blockParamsType (W.TypeIndex ti) = W.params <$> getType ti
+
+stackFromBlockN :: Natural -> V W.ResultType
+stackFromBlockN n = do
+  stack <- get
+  asks ((stack <>) . f n)
+  where f 0 _ = []
+        f n' (InBlock _ _ s:ctxs) = if n' == 1 then s else s <> f (n'-1) ctxs
+        f _ (InFunction _:_) = []
+        f n' (_:ctxs) = f n' ctxs
+        f _ [] = []
+
+blockNBranchType :: Natural -> V W.ResultType
+blockNBranchType frames = f frames =<< ask
+  where f :: Natural -> [Ctx] -> V W.ResultType
+        f 0 (InBlock Block t _:_) = blockResultType t
+        f 0 (InBlock Loop t _:_) = blockParamsType t
+        f n (InBlock {}:ctxs) = f (n-1) ctxs
+        f _ (InFunction idx:_) = do
+          fmap W.results . functionType =<< getFunction idx
+        f n (_:ctxs) = f n ctxs
+        f n [] = error $
+          "Asked to go up " ++ show frames ++ " blocks, "
+          ++ "but we only have " ++ show (frames - n) ++ " of context."
+
+
+branch :: Natural -> V [M.Instruction]
+branch idx = do
+  -- Clean up the stack.
+  stack <- stackFromBlockN idx
+  t <- blockNBranchType idx
+  let resultStackSize = sum $ fmap numCells t
+      drop' = case resultStackSize of
+                0 -> [M.Drop]
+                1 -> [M.Swap 1, M.Drop]
+                _ -> [M.MoveUp (fromIntegral resultStackSize), M.Drop]
+  if resultStackSize >= M.accessibleStackDepth
+    then bad $ BlockResultTooLarge resultStackSize
+    else pure $ concat (replicate (length stack - resultStackSize) drop') <>
+                -- Set the branch counter.
+                [ M.Push (fromIntegral idx + 1)
+                , M.MemStore (Just branchCounter)
                 ]
-                [ M.Push 0             -- [0, x, ...]
-                ]
-            ]
-
-        translateInstr _ W.I64Eqz = typed [W.I64] [W.I32] [M.IEqz64]
-
-          -- is the top of the WASM stack an i32 or i64, at this point in time?
-          -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
-        translateInstr _ W.Drop = withPrefix $ pure . \t -> replicate (numCells t) M.Drop
-
-        translateInstr _ (W.CallIndirect tyIdx) = case W.types m !! fromIntegral tyIdx of
-          W.FuncType paramsTys retTys -> do
-            params <- checkTypes paramsTys
-            ret    <- checkTypes retTys
-            typed (W.I32:reverse params) ret [M.Exec starkifyCallIndirectName]
-
-        -- We always have 2³² memory addresses, or more than the current Wasm we're targeting supports.
-        translateInstr _ W.CurrentMemory = typed [] [W.I32] [M.Push 0xFFFF]
-        -- Return -1 to indicate that we were unable to grow memory.
-        translateInstr _ W.GrowMemory = typed [W.I32] [W.I32] [M.Push 0xFFFFFFFF]
-
-        translateInstr _ i = unsupportedInstruction i
 
 continue
   :: Applicative f
@@ -1164,7 +1228,8 @@ writeW32s xs = writeW32s $ xs ++ replicate (4-length xs) 0
 
 -- TODO: define one procedure per type of function, this way we'd minimize the cost of
 --       all indirect calls by having dedicated binary searches on smaller trees?
-mkStarkifyCallIndirect :: (W.FuncIndex -> T.Text) -> W.Module -> V M.Proc
+-- TODO(Matthias): consider removing W.Module parameter.
+mkStarkifyCallIndirect :: (W.FuncIndex -> V T.Text) -> W.Module -> V M.Proc
 mkStarkifyCallIndirect funName m = inContext CallIndirectFun $ do
   instrs <- genInstrs elems
   return (M.Proc 1 instrs)
@@ -1178,27 +1243,27 @@ mkStarkifyCallIndirect funName m = inContext CallIndirectFun $ do
         genInstrs segments = do
           funs <- sortOn fst . concat <$> traverse segmentFuns segments
           guardAllConsecutive funs
-          return (binarySearchInstrs funName funs)
+          binarySearchInstrs <$> (traverse . traverse) funName funs
 
         guardAllConsecutive ((i, fi):(j, fj):xs)
           | j == i+1  = guardAllConsecutive ((j, fj):xs)
           | otherwise = badFunsNotConsecutive i fi j fj
         guardAllConsecutive _ = return ()
 
-binarySearchInstrs :: (W.FuncIndex -> T.Text) -> [(Word32, W.FuncIndex)] -> [M.Instruction]
-binarySearchInstrs funName = go
+binarySearchInstrs :: [(Word32, T.Text)] -> [M.Instruction]
+binarySearchInstrs = go
   where go [] = []
-        go [(_i, fi)] = [ M.Drop, M.Exec (funName fi) ]
+        go [(_i, name)] = [ M.Drop, M.Exec name ]
         go funs =
           let midpoint = length funs `div` 2
-              midfun@(mid, fmid) = funs !! midpoint in
+              midfun@(mid, name) = funs !! midpoint in
                           -- [fun_off, ...args...]
           [ M.Push mid    -- [mid, fun_off, ...args...]
           , M.Dup 1       -- [fun_off, mid, fun_off, ...args...]
           , M.IEq Nothing -- [fun_off == mid, fun_off, ...args...]
           , M.If          -- [fun_off, ...args...]
               [ M.Drop    -- [...args...]
-              , M.Exec (funName fmid)
+              , M.Exec name
               ]
               (if length funs > 2
                 then [ M.Dup 0    -- [fun_off, fun_off, ...args...]
