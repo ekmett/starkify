@@ -4,6 +4,7 @@
 
 module Validation where
 
+import Control.Applicative
 import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
@@ -26,6 +27,15 @@ newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.Result
 deriving instance (Semigroup e) => MonadState W.ResultType (Validation e)
 deriving instance (Semigroup e) => MonadValidate e (Validation e)
 deriving instance MonadReader [Ctx] (Validation e)
+
+instance Monoid e => Alternative (Validation e) where
+  empty = refute mempty
+  Validation a <|> Validation b = Validation $ do
+    lift (runValidateT a) >>= \case
+      Right ra -> return ra
+      Left ea -> lift (runValidateT b) >>= \case
+        Right rb -> return rb
+        Left eb -> refute $ ea <> eb
 
 bad :: e -> Validation (DList.DList (Error e)) a
 bad e = do

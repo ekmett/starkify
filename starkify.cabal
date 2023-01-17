@@ -37,6 +37,7 @@ library
                       wasm,
                       pretty-simple,
                       dlist,
+                      transformers,
                       tuple,
                       monad-validate
   ghc-options:        -Wall
