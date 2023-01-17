@@ -344,17 +344,23 @@ toMASM m = do
                    (_, _) -> [M.NEq (Just 0), M.If tb' fb'] <> is'
           where params = blockParamsType t
         translateInstrs _ (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
-        translateInstrs a (i@(W.BrIf idx):is) k = do
-          is' <- translateInstrs a is (k+1)
+        translateInstrs a (i@(W.BrIf idx):is) k = typedV [W.I32] [] $ do
           br <- inContext (InInstruction k i) $ branch idx
+          is' <- translateInstrs a is (k+1)
           pure [M.NEq (Just 0), M.If br is']
         -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-        translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = inContext (InInstruction k i) $ brTable 0 cases
-          where brTable _ [] = (M.Drop :) <$> branch defaultIdx
-                brTable j (idx:idxs) = do
-                  br <- branch idx
-                  br' <- brTable (j+1) idxs
-                  pure [M.Dup 0, M.Eq (Just j), M.If (M.Drop : br) br']
+        translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k =
+          typedV [W.I32] [] $
+          inContext (InInstruction k i) $ do
+            let branch' = fmap (M.Drop :) . branch
+                -- Step through our table,
+                -- and reduce the working index as we go along.
+                -- Stop and branch when either the index is 0
+                -- or we run out of table.
+                step br rest =
+                  [ M.Dup 0, M.Eq (Just 0)
+                  , M.If br (M.Sub (Just 1) : rest)]
+            foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
         translateInstrs _ (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
@@ -1117,12 +1123,15 @@ computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
   ]
 
 typed :: W.ParamsType -> W.ResultType -> a -> V a
-typed params result x = do
+typed params result x = typedV params result (pure x)
+
+typedV :: W.ParamsType -> W.ResultType -> V a -> V a
+typedV params result x = do
   stk <- get
   case stripPrefix params stk of
     Nothing -> bad (ExpectedStack params stk)
     Just stk' -> f stk'
-  where f stack = put (result <> stack) >> pure x
+  where f stack = put (result <> stack) >> x
 
 withPrefix :: (W.ValueType -> V a) -> V a
 withPrefix f = get >>= \ case
