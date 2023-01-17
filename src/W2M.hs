@@ -349,12 +349,14 @@ toMASM m = do
           is' <- translateInstrs a is (k+1)
           pure [M.NEq (Just 0), M.If br is']
         -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-        translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = typedV [W.I32] [] $ inContext (InInstruction k i) $ brTable 0 cases
-          where brTable _ [] = (M.Drop :) <$> branch defaultIdx
-                brTable j (idx:idxs) = do
-                  br <- branch idx
-                  br' <- brTable (j+1) idxs
-                  pure [M.Dup 0, M.Eq (Just j), M.If (M.Drop : br) br']
+        translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k =
+          typedV [W.I32] [] $
+          inContext (InInstruction k i) $ do
+            let branch' = fmap (M.Drop :) . branch
+                step br rest =
+                  [ M.Dup 0, M.Eq (Just 0)
+                  , M.If br (M.Sub (Just 1) : rest)]
+            foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
         translateInstrs _ (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
         translateInstrs a (W.Nop:is) k = translateInstrs a is k
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
