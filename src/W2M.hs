@@ -15,7 +15,7 @@ import Data.ByteString.Lazy qualified as BS
 import Data.Char (isAsciiLower)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable
-import Data.Functor ((<&>))
+import Data.Functor ((<&>), ($>))
 import Data.List (stripPrefix, sortOn)
 import Data.Map (Map)
 import Data.Map qualified as Map
@@ -284,13 +284,14 @@ translateInstrs a (i@(W.If t tb fb):is) k = do
   pure $ body' <> is'
 
 translateInstrs _ (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
-translateInstrs a (i@(W.BrIf idx):is) k = typedV [W.I32] [] $ do
+translateInstrs a (i@(W.BrIf idx):is) k = do
+  typed [W.I32] []
   br <- inContext (InInstruction k i) $ branch idx
   is' <- translateInstrs a is (k+1)
   pure [M.NEq (Just 0), M.If br is']
 -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k =
-  typedV [W.I32] [] $
+translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = do
+  typed [W.I32] []
   inContext (InInstruction k i) $ do
     let branch' = fmap (M.Drop :) . branch
         -- Step through our table,
@@ -336,16 +337,16 @@ translateInstr _ (W.Call idx) = do
   params' <- checkTypes params
   res' <- checkTypes res
   name <- procName $ Right $ fromIntegral idx
-  typed (reverse params') res' [M.Exec name]
-translateInstr _ (W.I32Const w32) = typed [] [W.I32] [M.Push w32]
+  typed (reverse params') res' $> [M.Exec name]
+translateInstr _ (W.I32Const w32) = typed [] [W.I32] $> [M.Push w32]
 translateInstr _ (W.IUnOp bitsz op) = translateIUnOp bitsz op
 translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
-translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
+translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] $> [M.IEq (Just 0)]
 translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
 translateInstr _ W.Select = asum
-  [ typed [W.I32, W.I32, W.I32] [W.I32] oneCell
-  , typed [W.I32, W.F32, W.F32] [W.F32] oneCell
-  , typed [W.I32, W.I64, W.I64] [W.I64] twoCells
+  [ typed [W.I32, W.I32, W.I32] [W.I32] $> oneCell
+  , typed [W.I32, W.F32, W.F32] [W.F32] $> oneCell
+  , typed [W.I32, W.I64, W.I64] [W.I64] $> twoCells
   ]
   where
     oneCell = [M.Eq (Just 0), M.CDrop]
@@ -359,7 +360,7 @@ translateInstr _ W.Select = asum
       ]
 translateInstr _ (W.I32Load (W.MemArg offset _align)) = do
   memBeginning <- getMemBeginning
-  typed [W.I32] [W.I32]
+  typed [W.I32] [W.I32] $>
     -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
     [ M.Push 4
     , M.IDiv
@@ -372,7 +373,7 @@ translateInstr _ (W.I32Load (W.MemArg offset _align)) = do
 translateInstr _ (W.I32Store (W.MemArg offset _align)) = do
   memBeginning <- getMemBeginning
   -- we need to turn [val, byte_addr, ...] of wasm into [u32_addr, val, ...]
-  typed [W.I32, W.I32] []
+  typed [W.I32, W.I32] [] $>
     -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
     [ M.Swap 1
     , M.Push 4
@@ -385,7 +386,7 @@ translateInstr _ (W.I32Store (W.MemArg offset _align)) = do
     ]
 translateInstr _ (W.I32Load8U (W.MemArg offset _align)) = do
   memBeginning <- getMemBeginning
-  typed [W.I32] [W.I32]
+  typed [W.I32] [W.I32] $>
     [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
     , M.IAdd                       -- [byte_addr+offset, ...]
     , M.IDivMod (Just 4)           -- [r, q, ...]
@@ -413,7 +414,7 @@ translateInstr _ (W.I32Load8U (W.MemArg offset _align)) = do
     ]
 translateInstr a (W.I32Load8S mem) = do
   loadInstrs <- translateInstr a (W.I32Load8U mem)
-  sigInstrs <- typed [W.I32] [W.I32]         -- [v, ...]
+  sigInstrs <- typed [W.I32] [W.I32] $>       -- [v, ...]
             [ M.Dup 0                         -- [v, v, ...]
             , M.Push 128, M.IGte              -- [v >= 128, v, ...]
             , M.If                            -- [v, ...]
@@ -440,7 +441,7 @@ translateInstr _ (W.I32Store8 (W.MemArg offset _align)) = do
   -- setting free the relevant bits in v:
   -- v'  = xxxxxxxx|00000000|xxxxxxxx|xxxxxxxx
   -- and storing v' | i'
-  typed [W.I32, W.I32] []
+  typed [W.I32, W.I32] [] $>
     [ M.Swap 1                     -- [byte_addr, i, ...]
     , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
     , M.IAdd                       -- [byte_addr+offset, i, ...]
@@ -467,7 +468,7 @@ translateInstr _ (W.I32Store8 (W.MemArg offset _align)) = do
     ]
 translateInstr _ (W.I32Load16U (W.MemArg offset _align)) = do
   memBeginning <- getMemBeginning
-  typed [W.I32] [W.I32]
+  typed [W.I32] [W.I32] $>
     [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
     , M.IAdd                       -- [byte_addr+offset, ...]
     , M.IDivMod (Just 4)           -- [r, q, ...]
@@ -496,7 +497,7 @@ translateInstr _ (W.I32Load16U (W.MemArg offset _align)) = do
 translateInstr _ (W.I32Store16 (W.MemArg offset _align)) = do
   when (mod offset 4 == 3) $ error "offset = 3!"
   memBeginning <- getMemBeginning
-  typed [W.I32, W.I32] []
+  typed [W.I32, W.I32] [] $>
     [ M.Swap 1                     -- [byte_addr, i, ...]
     , M.Push (fromIntegral offset) -- [offset, byte_addr, i, ...]
     , M.IAdd                       -- [byte_addr+offset, i, ...]
@@ -523,11 +524,11 @@ translateInstr _ (W.I32Store16 (W.MemArg offset _align)) = do
     ]
 -- locals
 translateInstr localAddrs (W.GetLocal k) = case Map.lookup k localAddrs of
-  Just (loct, is) -> typed [] [loct] (map M.LocLoad is)
+  Just (loct, is) -> typed [] [loct] $> map M.LocLoad is
   _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
 
 translateInstr localAddrs (W.SetLocal k) = case Map.lookup k localAddrs of
-  Just (loct, as) -> typed [loct] [] (map M.LocStore $ reverse as)
+  Just (loct, as) -> typed [loct] [] $> map M.LocStore (reverse as)
   _ -> error ("impossible: local variable " ++ show k ++ " not found?!")
 translateInstr localAddrs (W.TeeLocal k) =
   (<>) <$> translateInstr localAddrs (W.SetLocal k)
@@ -537,9 +538,9 @@ translateInstr localAddrs (W.TeeLocal k) =
 translateInstr _ (W.GetGlobal k) = do
   addr <- getGlobalAddr k
   getGlobalTy k >>= \case
-    W.I32 -> typed [] [W.I32]
+    W.I32 -> typed [] [W.I32] $>
         [ M.MemLoad $ Just addr]
-    W.I64 -> typed [] [W.I64]
+    W.I64 -> typed [] [W.I64] $>
         [ M.MemLoad $ Just addr
         , M.MemLoad . Just $ addr + 1
         ]
@@ -547,9 +548,9 @@ translateInstr _ (W.GetGlobal k) = do
 translateInstr _ (W.SetGlobal k) = do
   addr <- getGlobalAddr k
   getGlobalTy k >>= \case
-    W.I32 -> typed [W.I32] []
+    W.I32 -> typed [W.I32] [] $>
         [ M.MemStore . Just $ addr ]
-    W.I64 -> typed [W.I64] []
+    W.I64 -> typed [W.I64] [] $>
         [ M.MemStore . Just $ addr + 1
         , M.MemStore . Just $ addr
         ]
@@ -557,7 +558,7 @@ translateInstr _ (W.SetGlobal k) = do
 
 -- https://maticnetwork.github.io/miden/user_docs/stdlib/math/u64.html
 -- 64 bits integers are emulated by separating the high and low 32 bits.
-translateInstr _ (W.I64Const k) = typed [] [W.I64]
+translateInstr _ (W.I64Const k) = typed [] [W.I64] $>
     [ M.Push k_lo
     , M.Push k_hi
     ]
@@ -571,7 +572,7 @@ translateInstr _ (W.I64Load (W.MemArg offset _align)) = do
   -- to get lo and hi 32 bits of i64 value respectively.
   --
   -- u32_addr = (byte_addr / 4) + (offset / 4) + memBeginning
-  typed [W.I32] [W.I64]
+  typed [W.I32] [W.I64] $>
     [ M.Push 4, M.IDiv
     , M.Push (fromIntegral offset `div` 4)
     , M.IAdd
@@ -590,7 +591,7 @@ translateInstr _ (W.I64Store (W.MemArg offset _align)) = do
   -- and the call mem_store twice
   -- (once at u32_addr, once at u32_addr+1)
   -- to get hi and lo 32 bits of i64 value into memory.
-  typed [W.I64, W.I32] []
+  typed [W.I64, W.I32] [] $>
       [ M.Swap 1, M.Swap 2 -- [byte_addr, hi, lo, ...]
       , M.Push 4, M.IDiv
       , M.Push (fromIntegral offset `div` 4)
@@ -605,7 +606,7 @@ translateInstr _ (W.I64Store (W.MemArg offset _align)) = do
       ]
 translateInstr _ (W.I64Load8U (W.MemArg offset _align)) = do
   memBeginning <- getMemBeginning
-  typed [W.I32] [W.I64]                 -- [byte_addr, ...]
+  typed [W.I32] [W.I64] $>         -- [byte_addr, ...]
     [ M.Push (fromIntegral offset) -- [offset, byte_addr, ...]
     , M.IAdd
     , M.IDivMod (Just 8)           -- [r, q, ...]
@@ -645,7 +646,7 @@ translateInstr _ (W.I64Store8 (W.MemArg offset _align)) = do
   --
   -- TODO: only load, transform and store the limb that's targetted by the memory
   -- op?
-  typed [W.I64, W.I32] []               -- [i_hi, i_lo, byte_addr, ...]
+  typed [W.I64, W.I32] [] $>        -- [i_hi, i_lo, byte_addr, ...]
     [ M.MoveUp 2                   -- [byte_addr, i_hi, i_lo, ...]
     , M.Push (fromIntegral offset) -- [offset, byte_addr, i_hi, i_lo, ...]
     , M.IAdd                       -- [byte_addr+offset, i_hi, i_lo, ...]
@@ -692,13 +693,13 @@ translateInstr _ (W.I64Store8 (W.MemArg offset _align)) = do
 -- and after like: [0, i, ...].
 -- Since an i64 'x' on the stack is in Miden represented as [x_hi, x_lo], pushing 0
 -- effectively grabs the i32 for the low bits and sets the high 32 bits to 0.
-translateInstr _ W.I64ExtendUI32 = typed [W.I32] [W.I64] [M.Push 0]
+translateInstr _ W.I64ExtendUI32 = typed [W.I32] [W.I64] $> [M.Push 0]
 -- similarly, wrap drops the high 32 bits, which amounts to dropping the tip of the stack
 -- in miden, going from [v_hi, v_lo, ...] to [v_lo, ...]
-translateInstr _ W.I32WrapI64 = typed [W.I64] [W.I32] [M.Drop]
+translateInstr _ W.I32WrapI64 = typed [W.I64] [W.I32] $> [M.Drop]
 -- this is a sign-aware extension, so we push 0 or maxBound :: Word32
 -- depending on whether the 32 bits number is negative or not.
-translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64] $
+translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64] $>
     -- TODO: investigate performance of computing both branches and using select.
     --       Miden docs suggest it might be faster.
     [ M.Dup 0                  -- [x, x, ...]
@@ -710,7 +711,7 @@ translateInstr _ W.I64ExtendSI32 = typed [W.I32] [W.I64] $
         ]
     ]
 
-translateInstr _ W.I64Eqz = typed [W.I64] [W.I32] [M.IEqz64]
+translateInstr _ W.I64Eqz = typed [W.I64] [W.I32] $> [M.IEqz64]
 -- is the top of the WASM stack an i32 or i64, at this point in time?
 -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
 translateInstr _ W.Drop = withPrefix $ pure . \t -> replicate (numCells t) M.Drop
@@ -721,12 +722,12 @@ translateInstr _ (W.CallIndirect tyIdx) =
   getType tyIdx >>= \(W.FuncType paramsTys retTys) -> do
     params <- checkTypes paramsTys
     ret    <- checkTypes retTys
-    typed (W.I32:reverse params) ret [M.Exec starkifyCallIndirectName]
+    typed (W.I32:reverse params) ret $> [M.Exec starkifyCallIndirectName]
 
 -- We always have 2³² memory addresses, or more than the current Wasm we're targeting supports.
-translateInstr _ W.CurrentMemory = typed [] [W.I32] [M.Push 0xFFFF]
+translateInstr _ W.CurrentMemory = typed [] [W.I32] $> [M.Push 0xFFFF]
 -- Return -1 to indicate that we were unable to grow memory.
-translateInstr _ W.GrowMemory = typed [W.I32] [W.I32] [M.Push 0xFFFFFFFF]
+translateInstr _ W.GrowMemory = typed [W.I32] [W.I32] $> [M.Push 0xFFFFFFFF]
 
 translateInstr _ i = unsupportedInstruction i
 
@@ -828,11 +829,11 @@ continueLoop =
 
 translateIUnOp :: W.BitSize -> W.IUnOp -> V [M.Instruction]
 translateIUnOp W.BS32 op = case op of
-  W.IPopcnt -> typed [W.I32] [W.I32] [M.IPopcnt]
+  W.IPopcnt -> typed [W.I32] [W.I32] $> [M.IPopcnt]
   _         -> unsupportedInstruction (W.IUnOp W.BS32 op)
 
 translateIUnOp W.BS64 op = case op of
-  W.IPopcnt -> typed [W.I64] [W.I64] -- [a, b, ...]
+  W.IPopcnt -> typed [W.I64] [W.I64] $> -- [a, b, ...]
     [ M.IPopcnt                      -- [popcnt(a), b, ...]
     , M.Swap 1                       -- [b, popcnt(a), ...]
     , M.IPopcnt                      -- [popcnt(b), popcnt(a), ...]
@@ -850,14 +851,14 @@ translateIBinOp W.BS64 op = case op of
   W.ISub  -> stackBinop W.I64 M.ISub64
   W.IMul  -> stackBinop W.I64 M.IMul64
   W.IDivU -> stackBinop W.I64 M.IDiv64
-  W.IShl  -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IShL64]
-  W.IShrU -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IShR64]
+  W.IShl  -> typed [W.I64, W.I64] [W.I64] $> [M.Drop, M.IShL64]
+  W.IShrU -> typed [W.I64, W.I64] [W.I64] $> [M.Drop, M.IShR64]
   W.IOr   -> stackBinop W.I64 M.IOr64
   W.IAnd  -> stackBinop W.I64 M.IAnd64
   W.IXor  -> stackBinop W.I64 M.IXor64
 
   W.IShrS ->
-    typed [W.I64, W.I64] [W.I64] -- [b_hi, b_lo, a_hi, a_lo, ...]
+    typed [W.I64, W.I64] [W.I64] $> -- [b_hi, b_lo, a_hi, a_lo, ...]
     ( [ M.Drop                   -- [b_lo, a_hi, a_lo, ...]
       , M.Push 64, M.IMod        -- [b%64, a_hi, a_lo, ...]
       ] ++ computeDup64 1 ++     -- [a_hi, a_lo, b%64, a_hi, a_lo, ...]
@@ -874,7 +875,7 @@ translateIBinOp W.BS64 op = case op of
       ]
     )
   W.IDivS ->
-    typed [W.I64, W.I64] [W.I64]   -- [b_hi, b_lo, a_hi, a_lo, ...]
+    typed [W.I64, W.I64] [W.I64] $> -- [b_hi, b_lo, a_hi, a_lo, ...]
     ( [ M.Dup 3, M.Dup 3 ] ++
       computeAbs64 ++              -- [abs(a)_hi, abs(a)_lo, b_hi, b_lo, a_hi, a_lo, ...]
       [ M.Dup 3, M.Dup 3 ] ++
@@ -892,10 +893,10 @@ translateIBinOp W.BS64 op = case op of
     )
   W.IRemU -> stackBinop W.I64 M.IMod64
   W.IRemS -> do -- [b_hi, b_lo, a_hi, a_lo, ...] and we want a `rem` b
-    dups <- typed [W.I64, W.I64] [W.I64, W.I64, W.I64, W.I64]
+    dups <- typed [W.I64, W.I64] [W.I64, W.I64, W.I64, W.I64] $>
       (computeDup64 2 ++ computeDup64 2) -- [b_hi, b_lo, a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
     divRes <- translateIBinOp W.BS64 W.IDivS -- [q_hi, q_lo, b_hi, b_lo, a_hi, a_lo, ...]
-    remRes <- typed [W.I64, W.I64, W.I64] [W.I64]
+    remRes <- typed [W.I64, W.I64, W.I64] [W.I64] $>
       [ M.IMul64 -- [ (b*q)_hi, (b*q)_lo, a_hi, a_lo, ...]
       , M.ISub64 -- [ (a - b*q)_hi, (a - b*q)_lo, ...]
       ]
@@ -904,8 +905,8 @@ translateIBinOp W.BS64 op = case op of
   -- in both of these, the number of bits by which we "rotate" needs to be a 64 bits integer for wasm
   -- even though it's surely safe to assume we won't get arguments that don't fit in an 32 bits integer.
   -- but since Miden wants a 32 bits argument there we just drop the high limb of the 64 bits integer.
-  W.IRotl -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IRotl64]
-  W.IRotr -> typed [W.I64, W.I64] [W.I64] [M.Drop, M.IRotr64]
+  W.IRotl -> typed [W.I64, W.I64] [W.I64] $> [M.Drop, M.IRotl64]
+  W.IRotr -> typed [W.I64, W.I64] [W.I64] $> [M.Drop, M.IRotr64]
 translateIBinOp W.BS32 op = case op of
   W.IAdd  -> stackBinop W.I32 M.IAdd
   W.ISub  -> stackBinop W.I32 M.ISub
@@ -920,7 +921,7 @@ translateIBinOp W.BS32 op = case op of
 
   -- https://bisqwit.iki.fi/story/howto/bitmath/#DviIdivDiviSignedDivision
   W.IDivS ->
-    typed [W.I32, W.I32] [W.I32]   -- [b, a, ...]
+    typed [W.I32, W.I32] [W.I32] $> -- [b, a, ...]
     ( [ M.Dup 1 ] ++ computeAbs ++ -- [abs(a), b, a, ...]
       [ M.Dup 1 ] ++ computeAbs ++ -- [abs(b), abs(a), b, a, ...]
       [ M.IDiv                     -- [abs(a)/abs(b), b, a, ...]
@@ -935,14 +936,15 @@ translateIBinOp W.BS32 op = case op of
       ]
     )
   W.IRemS -> do -- [b, a, ...] and we want a `rem` b
-    dups <- typed [W.I32, W.I32] [W.I32, W.I32, W.I32, W.I32] [M.Dup 1, M.Dup 1] -- [b, a, b, a, ...]
+    dups <- typed [W.I32, W.I32] [W.I32, W.I32, W.I32, W.I32] $>
+      [M.Dup 1, M.Dup 1] -- [b, a, b, a, ...]
     divRes <- translateIBinOp W.BS32 W.IDivS -- [q, b, a, ...]
-    remRes <- typed [W.I32, W.I32, W.I32] [W.I32]
+    remRes <- typed [W.I32, W.I32, W.I32] [W.I32] $>
       [ M.IMul -- [ b*q, a, ...]
       , M.ISub -- [ a - b*q, ...]
       ]
     return (dups ++ divRes ++ remRes)
-  W.IShrS -> typed [W.I32, W.I32] [W.I32] -- [b, a, ...]
+  W.IShrS -> typed [W.I32, W.I32] [W.I32] $> -- [b, a, ...]
     ( [ M.Dup 1                  -- [a, b, a, ...]
       ] ++ computeIsNegative ++  -- [a_negative, b, a, ...]
       [ M.If                     -- [b, a, ...]
@@ -965,7 +967,7 @@ translateIRelOp W.BS64 op = case op of
   W.IGtU -> stackRelop W.I64 M.IGt64
   W.ILeU -> stackRelop W.I64 M.ILte64
   W.IGeU -> stackRelop W.I64 M.IGte64
-  W.ILtS -> typed [W.I64, W.I64] [W.I32]        -- [b_hi, b_lo, a_hi, a_lo, ...]
+  W.ILtS -> typed [W.I64, W.I64] [W.I32] $>     -- [b_hi, b_lo, a_hi, a_lo, ...]
     ( [ M.Dup 3, M.Dup 3                        -- [a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
       ] ++ computeIsNegative64 ++               -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
       [ M.Dup 2, M.Dup 2                        -- [b_hi, b_lo, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
@@ -991,7 +993,7 @@ translateIRelOp W.BS64 op = case op of
           ]
       ]
     )
-  W.IGtS -> typed [W.I64, W.I64] [W.I32]        -- [b_hi, b_lo, a_hi, a_lo, ...]
+  W.IGtS -> typed [W.I64, W.I64] [W.I32] $>     -- [b_hi, b_lo, a_hi, a_lo, ...]
     ( [ M.Dup 3, M.Dup 3                        -- [a_hi, a_lo, b_hi, b_lo, a_hi, a_lo, ...]
       ] ++ computeIsNegative64 ++               -- [a_neg, b_hi, b_lo, a_hi, a_lo, ...]
       [ M.Dup 2, M.Dup 2                        -- [b_hi, b_lo, a_neg, b_hi, b_lo, a_hi, a_lo, ...]
@@ -1022,7 +1024,7 @@ translateIRelOp W.BS64 op = case op of
     put [W.I64, W.I64]
     unsignedGtInstrs <- translateIRelOp W.BS64 W.IGtS
     put s
-    typed [W.I64, W.I64] [W.I32]     -- [b_hi, b_lo, a_hi, a_lo, ...]
+    typed [W.I64, W.I64] [W.I32] $>  -- [b_hi, b_lo, a_hi, a_lo, ...]
       ( unsignedGtInstrs ++          -- [a > b, ...]
         [M.Push 1, M.IXor]           -- [a <= b, ...]
       )
@@ -1031,7 +1033,7 @@ translateIRelOp W.BS64 op = case op of
     put [W.I64, W.I64]
     unsignedLtInstrs <- translateIRelOp W.BS64 W.ILtS
     put s
-    typed [W.I64, W.I64] [W.I32]     -- [b_hi, b_lo, a_hi, a_lo, ...]
+    typed [W.I64, W.I64] [W.I32] $>  -- [b_hi, b_lo, a_hi, a_lo, ...]
       ( unsignedLtInstrs ++          -- [a < b, ...]
         [M.Push 1, M.IXor]           -- [a >= b, ...]
       )
@@ -1042,7 +1044,7 @@ translateIRelOp W.BS32 op = case op of
   W.IGtU -> stackRelop W.I32 M.IGt
   W.ILeU -> stackRelop W.I32 M.ILte
   W.IGeU -> stackRelop W.I32 M.IGte
-  W.ILtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
+  W.ILtS -> typed [W.I32, W.I32] [W.I32] $>     -- [b, a, ...]
     ( [ M.Dup 1
       ] ++ computeIsNegative ++                 -- [a_neg, b, a, ...]
       [ M.Dup 1
@@ -1066,7 +1068,7 @@ translateIRelOp W.BS32 op = case op of
           ]
       ]
     )
-  W.IGtS -> typed [W.I32, W.I32] [W.I32]        -- [b, a, ...]
+  W.IGtS -> typed [W.I32, W.I32] [W.I32] $>     -- [b, a, ...]
     ( [ M.Dup 1
       ] ++ computeIsNegative ++                 -- [a_neg, b, a, ...]
       [ M.Dup 1
@@ -1095,7 +1097,7 @@ translateIRelOp W.BS32 op = case op of
     put [W.I32, W.I32]
     unsignedGtInstrs <- translateIRelOp W.BS32 W.IGtS
     put s
-    typed [W.I32, W.I32] [W.I32]     -- [b, a, ...]
+    typed [W.I32, W.I32] [W.I32] $>  -- [b, a, ...]
       ( unsignedGtInstrs ++          -- [a > b, ...]
         [M.Push 1, M.IXor]           -- [a <= b, ...]
       )
@@ -1104,7 +1106,7 @@ translateIRelOp W.BS32 op = case op of
     put [W.I32, W.I32]
     unsignedLtInstrs <- translateIRelOp W.BS32 W.ILtS
     put s
-    typed [W.I32, W.I32] [W.I32]     -- [b, a, ...]
+    typed [W.I32, W.I32] [W.I32] $>  -- [b, a, ...]
       ( unsignedLtInstrs ++          -- [a < b, ...]
         [M.Push 1, M.IXor]           -- [a >= b, ...]
       )
@@ -1116,10 +1118,10 @@ checkTypes = traverse f
         f t     = unsupportedArgType t
 
 stackBinop :: W.ValueType -> M.Instruction -> V [M.Instruction]
-stackBinop ty xs = typed [ty, ty] [ty] [xs]
+stackBinop ty xs = typed [ty, ty] [ty] $> [xs]
 
 stackRelop :: W.ValueType -> M.Instruction -> V [M.Instruction]
-stackRelop ty xs = typed [ty, ty] [W.I32] [xs]
+stackRelop ty xs = typed [ty, ty] [W.I32] $> [xs]
 
 -- TODO: turn those into procedures?
 
@@ -1196,16 +1198,12 @@ computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
   , M.Dup (i+1)      -- [a_hi, a_lo, ..., a_hi, a_lo, ...]
   ]
 
-typed :: W.ParamsType -> W.ResultType -> a -> V a
-typed params result x = typedV params result (pure x)
-
-typedV :: W.ParamsType -> W.ResultType -> V a -> V a
-typedV params result x = do
+typed :: W.ParamsType -> W.ResultType -> V ()
+typed params result = do
   stk <- get
   case stripPrefix params stk of
     Nothing -> bad (ExpectedStack params stk)
-    Just stk' -> f stk'
-  where f stack = put (result <> stack) >> x
+    Just stack -> put (result <> stack)
 
 withPrefix :: (W.ValueType -> V a) -> V a
 withPrefix f = get >>= \ case
