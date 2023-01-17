@@ -371,8 +371,21 @@ toMASM m = do
         translateInstr _ (W.IBinOp bitsz op) = translateIBinOp bitsz op
         translateInstr _ W.I32Eqz = typed [W.I32] [W.I32] [M.IEq (Just 0)]
         translateInstr _ (W.IRelOp bitsz op) = translateIRelOp bitsz op
-        translateInstr _ W.Select = typed [W.I32, W.I32, W.I32] [W.I32]
-          [M.CDrop]
+        translateInstr _ W.Select = asum
+          [ typed [W.I32, W.I32, W.I32] [W.I32] oneCell
+          , typed [W.I32, W.F32, W.F32] [W.F32] oneCell
+          , typed [W.I32, W.I64, W.I64] [W.I64] twoCells
+          ]
+          where
+            oneCell = [M.Eq (Just 0), M.CDrop]
+            twoCells =
+              [ M.NEq (Just 0)       -- [c, f1, f2, t1, t2, ...]
+              , M.If                 -- [f1, f2, t1, t2, ...]
+                [ M.Drop, M.Drop ]   -- [t1, t2, ...]
+                [ M.MoveUp 2, M.Drop -- [f1, f2, t2, ...]
+                , M.MoveUp 2, M.Drop -- [f1, f2, ...]
+                ]
+              ]
         translateInstr _ (W.I32Load (W.MemArg offset _align)) = typed [W.I32] [W.I32]
             -- assumes byte_addr is divisible by 4 and ignores remainder... hopefully it's always 0?
                    [ M.Push 4
