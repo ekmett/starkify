@@ -15,10 +15,12 @@ import Data.ByteString.Lazy qualified as BS
 import Data.Char (isAsciiLower)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable
+import Data.Functor ((<&>))
 import Data.List (stripPrefix, sortOn)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (catMaybes, maybeToList)
+import Data.Set qualified as Set
 import Data.Text.Lazy (Text)
 import Data.Text.Lazy qualified as T
 import Data.Vector (Vector)
@@ -27,6 +29,7 @@ import Data.Word (Word8, Word32)
 import GHC.Natural (Natural)
 import Language.Wasm.Structure qualified as W
 
+import Continuations qualified as C
 import MASM qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
 import Validation
@@ -222,32 +225,6 @@ toMASM m = do
                         , M.MemStore (Just branchCounter)
                         ]
 
-        continue :: [M.Instruction] -> [M.Instruction]
-        continue is =
-          [ M.MemLoad (Just branchCounter)
-          , M.Eq (Just 1)
-          , M.If [ M.Push 0
-                 , M.MemStore (Just branchCounter)
-                 ] []
-          , M.MemLoad (Just branchCounter)
-          , M.NEq (Just 0)
-          , M.If [ M.MemLoad (Just branchCounter)
-                 , M.Sub (Just 1)
-                 , M.MemStore (Just branchCounter)
-                 ]
-                 is
-          ]
-
-        continueLoop :: [M.Instruction]
-        continueLoop =
-          [ M.MemLoad (Just branchCounter)
-          , M.Eq (Just 1)
-          , M.Dup 0
-          , M.If [ M.Push 0
-                  , M.MemStore (Just branchCounter)
-                  ] []
-          ]
-
         blockResultType :: W.BlockType -> W.ResultType
         blockResultType (W.Inline Nothing) = []
         blockResultType (W.Inline (Just t')) = [t']
@@ -322,14 +299,14 @@ toMASM m = do
           body' <- inContext (InInstruction k i) $ inContext (InBlock Block t stack) $
             put (blockParamsType t) >> translateInstrs a body 0
           put (blockResultType t <> stack)
-          is' <- continue <$> translateInstrs a is (k+1)
+          is' <- continue i (translateInstrs a is (k+1))
           pure $ body' <> is'
         translateInstrs a (i@(W.Loop t body):is) k = do
           stack <- get
           body' <- inContext (InInstruction k i) $ inContext (InBlock Loop t stack) $
             put (blockParamsType t) >> translateInstrs a body 0
           put (blockResultType t <> stack)
-          is' <- continue <$> translateInstrs a is (k+1)
+          is' <- continue i (translateInstrs a is (k+1))
           pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
         translateInstrs a (i@(W.If t tb fb):is) k = do
           stack <- get
@@ -337,11 +314,10 @@ toMASM m = do
             (,) <$> inContext (InBlock If t stack) (put params >> translateInstrs a tb 0)
                 <*> inContext (InBlock If t stack) (put params >> translateInstrs a fb 0)
           put (blockResultType t <> stack)
-          is' <- continue <$> translateInstrs a is (k+1)
-          pure $ case (tb', fb') of
-                   ([], []) -> is'
-                   ([], _) -> [M.Eq (Just 0), M.If fb' tb'] <> is'
-                   (_, _) -> [M.NEq (Just 0), M.If tb' fb'] <> is'
+          is' <- continue i (translateInstrs a is (k+1))
+          let body' = [M.NEq (Just 0), M.If tb' fb']
+          pure $ body' <> is'
+
           where params = blockParamsType t
         translateInstrs _ (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
         translateInstrs a (i@(W.BrIf idx):is) k = typedV [W.I32] [] $ do
@@ -751,6 +727,40 @@ toMASM m = do
         translateInstr _ W.GrowMemory = typed [W.I32] [W.I32] [M.Push 0xFFFFFFFF]
 
         translateInstr _ i = unsupportedInstruction i
+
+continue
+  :: Applicative f
+  => W.Instruction Natural
+  -> f [M.Instruction]
+  -> f [M.Instruction]
+continue instruction localExit
+  | Set.singleton C.Local == exits = localExit
+  | Set.notMember C.Local exits = pure []
+  | otherwise = localExit <&> \rest ->
+    [ M.MemLoad (Just branchCounter)
+    , M.Eq (Just 1)
+    , M.If [ M.Push 0
+            , M.MemStore (Just branchCounter)
+            ] []
+    , M.MemLoad (Just branchCounter)
+    , M.NEq (Just 0)
+    , M.If [ M.MemLoad (Just branchCounter)
+            , M.Sub (Just 1)
+            , M.MemStore (Just branchCounter)
+            ]
+            rest
+    ]
+  where exits = C.findExits instruction
+
+continueLoop :: [M.Instruction]
+continueLoop =
+  [ M.MemLoad (Just branchCounter)
+  , M.Eq (Just 1)
+  , M.Dup 0
+  , M.If [ M.Push 0
+          , M.MemStore (Just branchCounter)
+          ] []
+  ]
 
 translateIUnOp :: W.BitSize -> W.IUnOp -> V [M.Instruction]
 translateIUnOp W.BS32 op = case op of
