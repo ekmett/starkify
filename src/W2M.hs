@@ -362,6 +362,8 @@ toMASM m = do
                   , M.If br (M.Sub (Just 1) : rest)]
             foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
         translateInstrs _ (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
+        translateInstrs _ (i@W.Unreachable:_) _ = pure
+          [M.comment $ show i, M.Push 0, M.Assert]
         translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
 
         translateInstr :: LocalAddrs -> W.Instruction Natural -> V [M.Instruction]
@@ -736,8 +738,6 @@ toMASM m = do
           -- is the top of the WASM stack an i32 or i64, at this point in time?
           -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
         translateInstr _ W.Drop = withPrefix $ pure . \t -> replicate (numCells t) M.Drop
-
-        translateInstr _ W.Unreachable = pure [M.Push 0, M.Assert]
 
         translateInstr _ (W.CallIndirect tyIdx) = case W.types m !! fromIntegral tyIdx of
           W.FuncType paramsTys retTys -> do
