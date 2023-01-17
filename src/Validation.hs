@@ -24,7 +24,7 @@ import Data.Word
 newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
 
-deriving instance (Semigroup e) => MonadState W.ResultType (Validation e)
+deriving instance MonadState W.ResultType (Validation e)
 deriving instance (Semigroup e) => MonadValidate e (Validation e)
 deriving instance MonadReader [Ctx] (Validation e)
 
