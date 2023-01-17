@@ -116,8 +116,7 @@ toMASM m =
     (\idx -> (liftA2 . liftA2) (,) (Just <$> procName idx) (fun2MASM idx))
     sortedFunctions
   methodInits <- sequence [ concat <$> traverse translateGlobals (WASI.init method) | (_, Left method) <- procs ]
-  let procNames :: [M.ProcName]
-      (procNames, procs') = unzip $ fmap (second translateProc) procs
+  let (procNames, procs') = unzip $ fmap (second translateProc) procs
 
   entryProcNames <- traverse procName entryFunctions
 
