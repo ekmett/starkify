@@ -353,6 +353,10 @@ toMASM m = do
           typedV [W.I32] [] $
           inContext (InInstruction k i) $ do
             let branch' = fmap (M.Drop :) . branch
+                -- Step through our table,
+                -- and reduce the working index as we go along.
+                -- Stop and branch when either the index is 0
+                -- or we run out of table.
                 step br rest =
                   [ M.Dup 0, M.Eq (Just 0)
                   , M.If br (M.Sub (Just 1) : rest)]
