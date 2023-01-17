@@ -40,7 +40,7 @@ let
       wasm = pkgs.haskell.lib.dontCheck (self.callHackage "wasm" "1.1.1" {});
     };
   };
-  
+
   starkify = (haskellPackages.callCabal2nix "starkify" (
     pkgs.runCommand "starkify-src" {} ''
       mkdir -p $out
@@ -52,7 +52,7 @@ let
   ) {}).overrideAttrs (old: { doCheck = false; });
 
   ghc = haskellPackages.ghcWithPackages (p: (
-    starkify.getCabalDeps.executableHaskellDepends 
+    starkify.getCabalDeps.executableHaskellDepends
     ++ starkify.getCabalDeps.libraryHaskellDepends
     ++ starkify.getCabalDeps.testHaskellDepends)
   );
