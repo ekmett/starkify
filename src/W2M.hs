@@ -726,6 +726,11 @@ toMASM m = do
             ret    <- checkTypes retTys
             typed (W.I32:reverse params) ret [M.Exec starkifyCallIndirectName]
 
+        -- We always have 2³² memory addresses, or more than the current Wasm we're targeting supports.
+        translateInstr _ W.CurrentMemory = typed [] [W.I32] [M.Push 0xFFFF]
+        -- Return -1 to indicate that we were unable to grow memory.
+        translateInstr _ W.GrowMemory = typed [W.I32] [W.I32] [M.Push 0xFFFFFFFF]
+
         translateInstr _ i = unsupportedInstruction i
 
 translateIUnOp :: W.BitSize -> W.IUnOp -> V [M.Instruction]
