@@ -10,8 +10,10 @@ import Control.Monad.State
 import Control.Monad.RWS.Strict
 import Data.DList qualified as DList
 import Data.Foldable
+import Data.Functor ((<&>))
 import Data.Function (on)
 import Data.List (sortOn)
+import Data.Maybe (fromMaybe)
 import Data.Typeable
 import GHC.Natural
 import GHC.Generics
@@ -20,7 +22,7 @@ import Language.Wasm.Validate qualified  as W
 
 import Data.Text.Lazy qualified as LT
 import Data.Word
-import W2M.Common ( ModuleInfo(..) )
+import W2M.Common ( ModuleInfo(..), LocalAddrs)
 
 newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
@@ -48,7 +50,7 @@ data Block = Block | Loop | If deriving Show
 
 data Ctx
   = InModule { moduleInfo :: ModuleInfo }
-  | InFunction Int -- func id
+  | InFunction { funcId :: Int, localAddrs :: LocalAddrs }
   | GlobalsInit
   | DatasInit
   | Import
@@ -69,6 +71,13 @@ getModuleInfo = do
   case asum $ isInModule <$> ctx of
     Nothing -> bad NotInModule
     Just moduleInfo -> pure moduleInfo
+
+getLocalAddrs :: V LocalAddrs
+getLocalAddrs =
+  ask <&> \ctx ->
+  let isInFunction InFunction {localAddrs} = Just localAddrs
+      isInFunction _ = Nothing
+  in fromMaybe mempty $ asum $ isInFunction <$> ctx
 
 blockDepth :: Validation e Int
 blockDepth = length . filter isBlock <$> ask
@@ -225,7 +234,7 @@ ppErr e =
 
 ppErrCtx :: Ctx -> String
 ppErrCtx (InModule _) = "in module"
-ppErrCtx (InFunction i) = "of function " ++ show i
+ppErrCtx (InFunction {funcId}) = "of function " ++ show funcId
 ppErrCtx DatasInit = "in data section"
 ppErrCtx GlobalsInit = "in globals initialisation"
 ppErrCtx Import = "in import"
