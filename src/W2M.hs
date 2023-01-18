@@ -191,7 +191,8 @@ toMASM m =
 
         getDataInit :: W.DataSegment -> V [M.Instruction]
         getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
-          offset_mexpr <- translateInstrs offset_wexpr 0
+          -- TODO(Matthias): Reset instruction count?
+          offset_mexpr <- translateInstrs offset_wexpr
           pure $ offset_mexpr ++
                  [ M.Push 4, M.IDiv             -- [offset_bytes/4, ...]
                  , M.Push memBeginning, M.IAdd  -- [offset_bytes/4+memBeginning, ...] =
@@ -205,7 +206,8 @@ toMASM m =
 
         getGlobalInit :: Int -> W.Global -> V [M.Instruction]
         getGlobalInit k g =
-          translateInstrs (W.initializer g ++ [W.SetGlobal $ fromIntegral k]) 0
+          -- TODO(Matthias): Reset instruction count?
+          translateInstrs (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
 
         -- "Functions are referenced through function indices, starting with the smallest index not referencing a function import."
         --                                              (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-module)
@@ -249,61 +251,73 @@ toMASM m =
                     | k <- [0..(length wasm_args - 1)]
                     ]
               in inContext (InFunction {funcId, localAddrs}) $ do
-              instrs <- translateInstrs body 0
+              -- TODO(Matthias): Reset instruction count?
+              instrs <- translateInstrs body
               return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
             _ -> error "impossible: integer fun identifier with StarkifyFun?!"
         fun2MASM (Left nm)
               | nm == starkifyCallIndirectName = Just . Right <$> mkStarkifyCallIndirect (procName . Right . fromIntegral) m
               | otherwise                      = badStarkifyFun nm
 
+bumpInstructionCount :: V ()
+bumpInstructionCount =
+  modify \VState {stack, instructionCount} ->
+    VState {stack, instructionCount = instructionCount + 1}
 
-translateInstrs ::  W.Expression -> Int -> V [M.Instruction]
-translateInstrs [] _k = pure []
-translateInstrs (i@(W.Block t body):is) k = do
-  stack <- get
+
+translateInstrs ::  W.Expression -> V [M.Instruction]
+translateInstrs [] = pure []
+translateInstrs (i@(W.Block t body):is) = do
+  VState {stack, instructionCount} <- get
   bt <- blockType t
   -- TODO(Matthias):
   -- This whole section reminds me of Twisted Functors.
   -- W.FuncType forms a monoid, and it acts on [W.ValueType]
   -- Refactor?
-  body' <- withLocalState (W.params bt)
-    $ inContext (InInstruction k i)
-    $ inContext (InBlock Block t stack) $
-    translateInstrs body 0
+  body' <-
+      inContext (InInstruction instructionCount i)
+    $ inContext (InBlock Block t stack)
+    $ withLocalStack (W.params bt)
+    $ translateInstrs body
   typedF bt
-  is' <- continue i (translateInstrs is (k+1))
+  is' <- continue i (bumpInstructionCount >> translateInstrs is)
   pure $ body' <> is'
-translateInstrs (i@(W.Loop t body):is) k = do
-  stack <- get
+translateInstrs (i@(W.Loop t body):is) = do
+  VState {stack, instructionCount} <- get
   bt <- blockType t
-  body' <- withLocalState (W.params bt)
-    $ inContext (InInstruction k i)
-    $ inContext (InBlock Loop t stack) $
-    translateInstrs body 0
+  body' <-
+      inContext (InInstruction instructionCount i)
+    $ inContext (InBlock Loop t stack)
+    $ withLocalStack (W.params bt)
+    $ translateInstrs body
   typedF bt
-  is' <- continue i (translateInstrs is (k+1))
+  is' <- continue i (bumpInstructionCount >> translateInstrs is)
   pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
-translateInstrs (i@(W.If t tb fb):is) k = do
+translateInstrs (i@(W.If t tb fb):is) = do
   bt <- blockType t
-  stack <- get
-  let makeContext = withLocalState (W.params bt)
+  VState {stack, instructionCount} <- get
+  let makeContext = withLocalStack (W.params bt)
                   . inContext (InBlock If t stack)
-  body <- inContext (InInstruction k i) $
-      M.If <$> makeContext (translateInstrs tb 0)
-           <*> makeContext (translateInstrs fb 0)
+  body <- inContext (InInstruction instructionCount i) $
+      M.If <$> makeContext (translateInstrs tb)
+           <*> makeContext (translateInstrs fb)
   typedF bt
-  is' <- continue i (translateInstrs is (k+1))
+  is' <- continue i (bumpInstructionCount >> translateInstrs is)
   let body' = [M.NEq (Just 0), body]
   pure $ body' <> is'
 
-translateInstrs (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
-translateInstrs (i@(W.BrIf idx):is) k = do
+translateInstrs (i@(W.Br idx):_) = do
+  k <- gets instructionCount
+  inContext (InInstruction k i) $ branch idx
+translateInstrs (i@(W.BrIf idx):is) = do
+  k <- gets instructionCount
   typed [W.I32] []
   br <- inContext (InInstruction k i) $ branch idx
-  is' <- translateInstrs is (k+1)
+  is' <- bumpInstructionCount >> translateInstrs is
   pure [M.NEq (Just 0), M.If br is']
 -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-translateInstrs (i@(W.BrTable cases defaultIdx):_) k = do
+translateInstrs (i@(W.BrTable cases defaultIdx):_) = do
+  k <- gets instructionCount
   typed [W.I32] []
   inContext (InInstruction k i) $ do
     let branch' = fmap (M.Drop :) . branch
@@ -315,11 +329,14 @@ translateInstrs (i@(W.BrTable cases defaultIdx):_) k = do
           [ M.Dup 0, M.Eq (Just 0)
           , M.If br (M.Sub (Just 1) : rest)]
     foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
-translateInstrs (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
-translateInstrs (i@W.Unreachable:_) _ = pure
+translateInstrs (W.Return:_) = do
+  k <- gets instructionCount
+  inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
+translateInstrs (i@W.Unreachable:_) = pure
   [M.comment $ show i, M.Push 0, M.Assert]
-translateInstrs (i:is) k = do
-  (<>) <$> inContext (InInstruction k i) (translateInstr i) <*> translateInstrs is (k+1)
+translateInstrs (i:is) = do
+  k <- gets instructionCount
+  (<>) <$> inContext (InInstruction k i) (translateInstr i) <*> (bumpInstructionCount >> translateInstrs is)
 
 exportedName :: Integral i => i -> V (Maybe FunName)
 exportedName i = do
@@ -769,7 +786,8 @@ blockType (W.TypeIndex ti) = getType ti
 
 stackFromBlockN :: Natural -> V W.ResultType
 stackFromBlockN n = do
-  stack <- get
+  -- TODO(Matthias): The logic here looks a bit weird, investigate.
+  VState {stack} <- get
   asks ((stack <>) . f n)
   where f 0 _ = []
         f n' (InBlock _ _ s:ctxs) = if n' == 1 then s else s <> f (n'-1) ctxs
@@ -1038,7 +1056,7 @@ translateIRelOp W.BS64 op = case op of
   W.ILeS -> do
     -- TODO(Matthias): clean this up, it's a bit confusing.
     unsignedGtInstrs <-
-      withLocalState [W.I64, W.I64] $
+      withLocalStack [W.I64, W.I64] $
       translateIRelOp W.BS64 W.IGtS
     typed [W.I64, W.I64] [W.I32] $>  -- [b_hi, b_lo, a_hi, a_lo, ...]
       ( unsignedGtInstrs ++          -- [a > b, ...]
@@ -1046,7 +1064,7 @@ translateIRelOp W.BS64 op = case op of
       )
   W.IGeS -> do
     -- TODO(Matthias): clean this up, it's a bit confusing.
-    unsignedLtInstrs <- withLocalState [W.I64, W.I64] $
+    unsignedLtInstrs <- withLocalStack [W.I64, W.I64] $
       translateIRelOp W.BS64 W.ILtS
     typed [W.I64, W.I64] [W.I32] $>  -- [b_hi, b_lo, a_hi, a_lo, ...]
       ( unsignedLtInstrs ++          -- [a < b, ...]
@@ -1109,7 +1127,7 @@ translateIRelOp W.BS32 op = case op of
     )
   W.ILeS -> do
     -- TODO(Matthias): clean this up, it's a bit confusing.
-    unsignedGtInstrs <- withLocalState [W.I32, W.I32] $
+    unsignedGtInstrs <- withLocalStack [W.I32, W.I32] $
       translateIRelOp W.BS32 W.IGtS
     typed [W.I32, W.I32] [W.I32] $>  -- [b, a, ...]
       ( unsignedGtInstrs ++          -- [a > b, ...]
@@ -1117,7 +1135,7 @@ translateIRelOp W.BS32 op = case op of
       )
   W.IGeS -> do
     -- TODO(Matthias): clean this up, it's a bit confusing.
-    unsignedLtInstrs <- withLocalState [W.I32, W.I32] $
+    unsignedLtInstrs <- withLocalStack [W.I32, W.I32] $
       translateIRelOp W.BS32 W.ILtS
     typed [W.I32, W.I32] [W.I32] $>  -- [b, a, ...]
       ( unsignedLtInstrs ++          -- [a < b, ...]
@@ -1213,22 +1231,21 @@ computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
 
 typed :: W.ParamsType -> W.ResultType -> V ()
 typed params result = do
-  stk <- get
-  case stripPrefix params stk of
-    Nothing -> bad (ExpectedStack params stk)
-    Just stack -> put (result <> stack)
+  VState {stack, instructionCount } <- get
+  case stripPrefix params stack of
+    Nothing -> bad (ExpectedStack params stack)
+    Just stack' -> put VState
+      { stack = result <> stack'
+      , instructionCount }
 
 typedF :: W.FuncType -> V ()
-typedF W.FuncType {params, results } = do
-  stk <- get
-  case stripPrefix params stk of
-    Nothing -> bad (ExpectedStack params stk)
-    Just stack -> put (results <> stack)
+typedF W.FuncType {params, results} = typed params results
 
 withPrefix :: (W.ValueType -> V a) -> V a
 withPrefix f = get >>= \ case
-  [] -> bad EmptyStack
-  x:xs -> put xs >> f x
+  VState {stack = []} -> bad EmptyStack
+  VState {stack = x:xs, instructionCount} ->
+    put VState {stack = xs, instructionCount} >> f x
 
 writeW32s :: [Word8] -> [M.Instruction]
 writeW32s [] = []

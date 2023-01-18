@@ -19,7 +19,7 @@ import System.IO
 import System.IO.Temp
 import System.Process
 import Text.Pretty.Simple (pShow)
-import Validation
+import Validation hiding (stack)
 import W2M
 import Data.IntMap.Strict qualified as IntMap
 import MASM.Interpreter (interpret, runInterp, Mem (..))
