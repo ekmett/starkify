@@ -191,7 +191,7 @@ toMASM m =
 
         getDataInit :: W.DataSegment -> V [M.Instruction]
         getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
-          offset_mexpr <- translateInstrs mempty offset_wexpr 0
+          offset_mexpr <- translateInstrs offset_wexpr 0
           pure $ offset_mexpr ++
                  [ M.Push 4, M.IDiv             -- [offset_bytes/4, ...]
                  , M.Push memBeginning, M.IAdd  -- [offset_bytes/4+memBeginning, ...] =
@@ -205,7 +205,7 @@ toMASM m =
 
         getGlobalInit :: Int -> W.Global -> V [M.Instruction]
         getGlobalInit k g =
-          translateInstrs mempty (W.initializer g ++ [W.SetGlobal $ fromIntegral k]) 0
+          translateInstrs (W.initializer g ++ [W.SetGlobal $ fromIntegral k]) 0
 
         -- "Functions are referenced through function indices, starting with the smallest index not referencing a function import."
         --                                              (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-module)
@@ -249,7 +249,7 @@ toMASM m =
                     | k <- [0..(length wasm_args - 1)]
                     ]
               in inContext (InFunction {funcId, localAddrs}) $ do
-              instrs <- translateInstrs localAddrs body 0
+              instrs <- translateInstrs body 0
               return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
             _ -> error "impossible: integer fun identifier with StarkifyFun?!"
         fun2MASM (Left nm)
@@ -257,41 +257,41 @@ toMASM m =
               | otherwise                      = badStarkifyFun nm
 
 
-translateInstrs :: LocalAddrs -> W.Expression -> Int -> V [M.Instruction]
-translateInstrs _ [] _k = pure []
-translateInstrs a (i@(W.Block t body):is) k = do
+translateInstrs ::  W.Expression -> Int -> V [M.Instruction]
+translateInstrs [] _k = pure []
+translateInstrs (i@(W.Block t body):is) k = do
   stack <- get
   body' <- inContext (InInstruction k i) $ inContext (InBlock Block t stack) $
-    blockParamsType t >>= put >> translateInstrs a body 0
+    blockParamsType t >>= put >> translateInstrs body 0
   put . (<> stack) =<< blockResultType t
-  is' <- continue i (translateInstrs a is (k+1))
+  is' <- continue i (translateInstrs is (k+1))
   pure $ body' <> is'
-translateInstrs a (i@(W.Loop t body):is) k = do
+translateInstrs (i@(W.Loop t body):is) k = do
   stack <- get
   body' <- inContext (InInstruction k i) $ inContext (InBlock Loop t stack) $
-    blockParamsType t >>= put >> translateInstrs a body 0
+    blockParamsType t >>= put >> translateInstrs body 0
   put . (<> stack) =<< blockResultType t
-  is' <- continue i (translateInstrs a is (k+1))
+  is' <- continue i (translateInstrs is (k+1))
   pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
-translateInstrs a (i@(W.If t tb fb):is) k = do
+translateInstrs (i@(W.If t tb fb):is) k = do
   params <- blockParamsType t
   stack <- get
   body <- inContext (InInstruction k i) $ do
-      M.If <$> inContext (InBlock If t stack) (put params >> translateInstrs a tb 0)
-        <*> inContext (InBlock If t stack) (put params >> translateInstrs a fb 0)
+      M.If <$> inContext (InBlock If t stack) (put params >> translateInstrs tb 0)
+        <*> inContext (InBlock If t stack) (put params >> translateInstrs fb 0)
   put . (<> stack) =<< blockResultType t
-  is' <- continue i (translateInstrs a is (k+1))
+  is' <- continue i (translateInstrs is (k+1))
   let body' = [M.NEq (Just 0), body]
   pure $ body' <> is'
 
-translateInstrs _ (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
-translateInstrs a (i@(W.BrIf idx):is) k = do
+translateInstrs (i@(W.Br idx):_) k = inContext (InInstruction k i) $ branch idx
+translateInstrs (i@(W.BrIf idx):is) k = do
   typed [W.I32] []
   br <- inContext (InInstruction k i) $ branch idx
-  is' <- translateInstrs a is (k+1)
+  is' <- translateInstrs is (k+1)
   pure [M.NEq (Just 0), M.If br is']
 -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = do
+translateInstrs (i@(W.BrTable cases defaultIdx):_) k = do
   typed [W.I32] []
   inContext (InInstruction k i) $ do
     let branch' = fmap (M.Drop :) . branch
@@ -303,10 +303,12 @@ translateInstrs _ (i@(W.BrTable cases defaultIdx):_) k = do
           [ M.Dup 0, M.Eq (Just 0)
           , M.If br (M.Sub (Just 1) : rest)]
     foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
-translateInstrs _ (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
-translateInstrs _ (i@W.Unreachable:_) _ = pure
+translateInstrs (W.Return:_) k = inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
+translateInstrs (i@W.Unreachable:_) _ = pure
   [M.comment $ show i, M.Push 0, M.Assert]
-translateInstrs a (i:is) k = (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs a is (k+1)
+translateInstrs (i:is) k = do
+  a <- getLocalAddrs
+  (<>) <$> inContext (InInstruction k i) (translateInstr a i) <*> translateInstrs is (k+1)
 
 exportedName :: Integral i => i -> V (Maybe FunName)
 exportedName i = do
