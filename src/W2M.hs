@@ -299,84 +299,92 @@ import2MASM import_
         { procNLocals
         , procInstrs = M.comment (show import_) : is }
 
-bumpInstructionCount :: V ()
-bumpInstructionCount =
-  modify' \VState {stack, instructionCount} ->
-    VState {stack, instructionCount = instructionCount + 1}
+translateInstrs :: W.Expression -> V [M.Instruction]
+translateInstrs = foldr f (pure []) . zip [0..] where
+  -- inContext (InInstruction instructionCount i)
+  f (instructionCount, i) localExit = do
+    localExit' <- fixCurrentContext localExit
+    inContext (InInstruction instructionCount i) $
+      translateControlInstr i localExit'
 
-
-translateInstrs ::  W.Expression -> V [M.Instruction]
-translateInstrs [] = pure []
-translateInstrs (i@(W.Block t body):is) = do
-  VState {stack, instructionCount} <- get
+translateControlInstr :: W.Instruction Natural -> V [M.Instruction] -> V [M.Instruction]
+translateControlInstr i@(W.Block t body) localExit = do
+  stack <- get
   bt <- blockType t
   -- TODO(Matthias):
   -- This whole section reminds me of Twisted Functors.
   -- W.FuncType forms a monoid, and it acts on [W.ValueType]
   -- Refactor?
   body' <-
-      inContext (InInstruction instructionCount i)
-    $ inContext (InBlock Block t stack)
+      inContext (InBlock Block t stack)
     $ withLocalStack (W.params bt)
     $ translateInstrs body
   typedF bt
-  is' <- continue i (bumpInstructionCount >> translateInstrs is)
+  is' <- continue i localExit
   pure $ body' <> is'
-translateInstrs (i@(W.Loop t body):is) = do
-  VState {stack, instructionCount} <- get
+translateControlInstr i@(W.Loop t body) localExit = do
+  stack <- get
   bt <- blockType t
   body' <-
-      inContext (InInstruction instructionCount i)
-    $ inContext (InBlock Loop t stack)
+      inContext (InBlock Loop t stack)
     $ withLocalStack (W.params bt)
     $ translateInstrs body
   typedF bt
-  is' <- continue i (bumpInstructionCount >> translateInstrs is)
+  is' <- continue i localExit
   pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
-translateInstrs (i@(W.If t tb fb):is) = do
+translateControlInstr i@(W.If t tb fb) localExit = do
   bt <- blockType t
-  VState {stack, instructionCount} <- get
+  stack <- get
   let makeContext = withLocalStack (W.params bt)
                   . inContext (InBlock If t stack)
-  body <- inContext (InInstruction instructionCount i) $
+  body <-
       M.If <$> makeContext (translateInstrs tb)
            <*> makeContext (translateInstrs fb)
   typedF bt
-  is' <- continue i (bumpInstructionCount >> translateInstrs is)
+  is' <- continue i localExit
   let body' = [M.NEq (Just 0), body]
   pure $ body' <> is'
 
-translateInstrs (i@(W.Br idx):_) = do
-  k <- gets instructionCount
-  inContext (InInstruction k i) $ branch idx
-translateInstrs (i@(W.BrIf idx):is) = do
-  k <- gets instructionCount
+translateControlInstr (W.Br idx) _ = branch idx
+translateControlInstr (W.BrIf idx) localExit = do
   typed [W.I32] []
-  br <- inContext (InInstruction k i) $ branch idx
-  is' <- bumpInstructionCount >> translateInstrs is
+  br <- branch idx
+  is' <- localExit
   pure [M.NEq (Just 0), M.If br is']
 -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-translateInstrs (i@(W.BrTable cases defaultIdx):_) = do
-  k <- gets instructionCount
+translateControlInstr (W.BrTable cases defaultIdx) _ = do
   typed [W.I32] []
-  inContext (InInstruction k i) $ do
-    let branch' = fmap (M.Drop :) . branch
-        -- Step through our table,
-        -- and reduce the working index as we go along.
-        -- Stop and branch when either the index is 0
-        -- or we run out of table.
-        step br rest =
-          [ M.Dup 0, M.Eq (Just 0)
-          , M.If br (M.Sub (Just 1) : rest)]
-    foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
-translateInstrs (W.Return:_) = do
-  k <- gets instructionCount
-  inContext (InInstruction k W.Return) $ branch . fromIntegral =<< blockDepth
-translateInstrs (i@W.Unreachable:_) = pure
+  let branch' = fmap (M.Drop :) . branch
+      -- Step through our table,
+      -- and reduce the working index as we go along.
+      -- Stop and branch when either the index is 0
+      -- or we run out of table.
+      step br rest =
+        [ M.Dup 0, M.Eq (Just 0)
+        , M.If br (M.Sub (Just 1) : rest)]
+  foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
+translateControlInstr W.Return _ = branch . fromIntegral =<< blockDepth
+translateControlInstr i@W.Unreachable _ = pure
   [M.comment $ show i, M.Push 0, M.Assert]
-translateInstrs (i:is) = do
-  k <- gets instructionCount
-  (<>) <$> inContext (InInstruction k i) (translateInstr i) <*> (bumpInstructionCount >> translateInstrs is)
+translateControlInstr (W.Call idx) localExit = do
+  W.FuncType params res <- getFunctionType idx
+  params' <- checkTypes params
+  res' <- checkTypes res
+  let name = procName (fromIntegral idx :: Integer)
+  (<>) <$>
+    (typed (reverse params') res' $> [M.Exec name])
+    <*> localExit
+
+translateControlInstr (W.CallIndirect tyIdx) localExit =
+  getType tyIdx >>= \(W.FuncType paramsTys retTys) -> do
+    params <- checkTypes paramsTys
+    ret    <- checkTypes retTys
+    liftA2 (<>)
+      (typed (W.I32:reverse params) ret $> [M.Exec starkifyCallIndirectName])
+      localExit
+
+translateControlInstr i localExit = do
+  (<>) <$> translateInstr i <*> localExit
 
 exportedName :: Integral i => i -> V (Maybe FunName)
 exportedName i = do
@@ -395,12 +403,6 @@ getGlobalTy k = do
 
 translateInstr :: W.Instruction Natural -> V [M.Instruction]
 translateInstr W.Nop = pure []
-translateInstr (W.Call idx) = do
-  W.FuncType params res <- getFunctionType idx
-  params' <- checkTypes params
-  res' <- checkTypes res
-  let name = procName (fromIntegral idx :: Integer)
-  typed (reverse params') res' $> [M.Exec name]
 translateInstr (W.I32Const w32) = typed [] [W.I32] $> [M.Push w32]
 translateInstr (W.IUnOp bitsz op) = translateIUnOp bitsz op
 translateInstr (W.IBinOp bitsz op) = translateIBinOp bitsz op
@@ -783,14 +785,6 @@ translateInstr W.I64Eqz = typed [W.I64] [W.I32] $> [M.IEqz64]
 -- i32 => 1 MASM 'drop', i64 => 2 MASM 'drop's.
 translateInstr W.Drop = withPrefix $ pure . \t -> replicate (numCells t) M.Drop
 
-translateInstr W.Unreachable = pure [M.Push 0, M.Assert]
-
-translateInstr (W.CallIndirect tyIdx) =
-  getType tyIdx >>= \(W.FuncType paramsTys retTys) -> do
-    params <- checkTypes paramsTys
-    ret    <- checkTypes retTys
-    typed (W.I32:reverse params) ret $> [M.Exec starkifyCallIndirectName]
-
 -- We always have 2³² memory addresses, or more than the current Wasm we're targeting supports.
 translateInstr W.CurrentMemory = typed [] [W.I32] $> [M.Push 0xFFFF]
 -- Return -1 to indicate that we were unable to grow memory.
@@ -816,7 +810,7 @@ blockType (W.TypeIndex ti) = getType ti
 stackFromBlockN :: Natural -> V W.ResultType
 stackFromBlockN n = do
   -- TODO(Matthias): The logic here looks a bit weird, investigate.
-  VState {stack} <- get
+  stack <- get
   asks ((stack <>) . f n)
   where f 0 _ = []
         f n' (InBlock _ _ s:ctxs) = if n' == 1 then s else s <> f (n'-1) ctxs
@@ -1259,21 +1253,18 @@ computeDup64 i = -- [..., a_hi, a_lo, ...] limbs at indices i and i+1
 
 typed :: W.ParamsType -> W.ResultType -> V ()
 typed params result = do
-  VState {stack, instructionCount } <- get
+  stack <- get
   case stripPrefix params stack of
     Nothing -> bad (ExpectedStack params stack)
-    Just stack' -> put VState
-      { stack = result <> stack'
-      , instructionCount }
+    Just stack' -> put $ result <> stack'
 
 typedF :: W.FuncType -> V ()
 typedF W.FuncType {params, results} = typed params results
 
 withPrefix :: (W.ValueType -> V a) -> V a
 withPrefix f = get >>= \ case
-  VState {stack = []} -> bad EmptyStack
-  VState {stack = x:xs, instructionCount} ->
-    put VState {stack = xs, instructionCount} >> f x
+  [] -> bad EmptyStack
+  x:xs -> put xs >> f x
 
 writeW32s :: [Word8] -> [M.Instruction]
 writeW32s [] = []
