@@ -10,7 +10,7 @@ import Control.Monad.State
 import Control.Monad.RWS.Strict
 import Data.DList qualified as DList
 import Data.Foldable
-import Data.Functor ((<&>))
+import Data.Functor ((<&>), ($>))
 import Data.Function (on)
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe)
@@ -30,6 +30,7 @@ newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.Result
 deriving instance MonadState W.ResultType (Validation e)
 deriving instance (Semigroup e) => MonadValidate e (Validation e)
 deriving instance MonadReader [Ctx] (Validation e)
+deriving instance MonadWriter () (Validation e)
 
 instance Monoid e => Alternative (Validation e) where
   empty = refute mempty
@@ -62,6 +63,13 @@ data Ctx
 
 inContext :: Ctx -> Validation e a -> Validation e a
 inContext c = local (c:)
+
+withLocalState :: Semigroup e => W.ResultType -> Validation e a -> Validation e a
+withLocalState localState (Validation v) = do
+  ctx <- ask
+  case runRWS (runValidateT v) ctx localState of
+    (Left errs, _state, w) -> tell w >> refute errs
+    (Right a, _state, w) -> tell w $> a
 
 getModuleInfo :: V ModuleInfo
 getModuleInfo = do

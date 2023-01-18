@@ -261,25 +261,33 @@ translateInstrs ::  W.Expression -> Int -> V [M.Instruction]
 translateInstrs [] _k = pure []
 translateInstrs (i@(W.Block t body):is) k = do
   stack <- get
-  body' <- inContext (InInstruction k i) $ inContext (InBlock Block t stack) $
-    blockParamsType t >>= put >> translateInstrs body 0
-  put . (<> stack) =<< blockResultType t
+  params <- blockParamsType t
+  body' <- withLocalState params
+    $ inContext (InInstruction k i)
+    $ inContext (InBlock Block t stack) $
+    translateInstrs body 0
+  typed params =<< blockResultType t
   is' <- continue i (translateInstrs is (k+1))
   pure $ body' <> is'
 translateInstrs (i@(W.Loop t body):is) k = do
   stack <- get
-  body' <- inContext (InInstruction k i) $ inContext (InBlock Loop t stack) $
-    blockParamsType t >>= put >> translateInstrs body 0
-  put . (<> stack) =<< blockResultType t
+  params <- blockParamsType t
+  body' <- withLocalState params
+    $ inContext (InInstruction k i)
+    $ inContext (InBlock Loop t stack) $
+    translateInstrs body 0
+  typed params =<< blockResultType t
   is' <- continue i (translateInstrs is (k+1))
   pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
 translateInstrs (i@(W.If t tb fb):is) k = do
   params <- blockParamsType t
   stack <- get
-  body <- inContext (InInstruction k i) $ do
-      M.If <$> inContext (InBlock If t stack) (put params >> translateInstrs tb 0)
-        <*> inContext (InBlock If t stack) (put params >> translateInstrs fb 0)
-  put . (<> stack) =<< blockResultType t
+  let makeContext = withLocalState params
+                  . inContext (InBlock If t stack)
+  body <- inContext (InInstruction k i) $
+      M.If <$> makeContext (translateInstrs tb 0)
+           <*> makeContext (translateInstrs fb 0)
+  typed params =<< blockResultType t
   is' <- continue i (translateInstrs is (k+1))
   let body' = [M.NEq (Just 0), body]
   pure $ body' <> is'
@@ -1026,19 +1034,18 @@ translateIRelOp W.BS64 op = case op of
       ]
     )
   W.ILeS -> do
-    s <- get
-    put [W.I64, W.I64]
-    unsignedGtInstrs <- translateIRelOp W.BS64 W.IGtS
-    put s
+    -- TODO(Matthias): clean this up, it's a bit confusing.
+    unsignedGtInstrs <-
+      withLocalState [W.I64, W.I64] $
+      translateIRelOp W.BS64 W.IGtS
     typed [W.I64, W.I64] [W.I32] $>  -- [b_hi, b_lo, a_hi, a_lo, ...]
       ( unsignedGtInstrs ++          -- [a > b, ...]
         [M.Push 1, M.IXor]           -- [a <= b, ...]
       )
   W.IGeS -> do
-    s <- get
-    put [W.I64, W.I64]
-    unsignedLtInstrs <- translateIRelOp W.BS64 W.ILtS
-    put s
+    -- TODO(Matthias): clean this up, it's a bit confusing.
+    unsignedLtInstrs <- withLocalState [W.I64, W.I64] $
+      translateIRelOp W.BS64 W.ILtS
     typed [W.I64, W.I64] [W.I32] $>  -- [b_hi, b_lo, a_hi, a_lo, ...]
       ( unsignedLtInstrs ++          -- [a < b, ...]
         [M.Push 1, M.IXor]           -- [a >= b, ...]
@@ -1099,19 +1106,17 @@ translateIRelOp W.BS32 op = case op of
       ]
     )
   W.ILeS -> do
-    s <- get
-    put [W.I32, W.I32]
-    unsignedGtInstrs <- translateIRelOp W.BS32 W.IGtS
-    put s
+    -- TODO(Matthias): clean this up, it's a bit confusing.
+    unsignedGtInstrs <- withLocalState [W.I32, W.I32] $
+      translateIRelOp W.BS32 W.IGtS
     typed [W.I32, W.I32] [W.I32] $>  -- [b, a, ...]
       ( unsignedGtInstrs ++          -- [a > b, ...]
         [M.Push 1, M.IXor]           -- [a <= b, ...]
       )
   W.IGeS -> do
-    s <- get
-    put [W.I32, W.I32]
-    unsignedLtInstrs <- translateIRelOp W.BS32 W.ILtS
-    put s
+    -- TODO(Matthias): clean this up, it's a bit confusing.
+    unsignedLtInstrs <- withLocalState [W.I32, W.I32] $
+      translateIRelOp W.BS32 W.ILtS
     typed [W.I32, W.I32] [W.I32] $>  -- [b, a, ...]
       ( unsignedLtInstrs ++          -- [a < b, ...]
         [M.Push 1, M.IXor]           -- [a >= b, ...]
