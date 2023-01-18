@@ -221,14 +221,14 @@ toMASM m =
         types = V.fromList $ W.types m
 
         fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
-        fun2MASM (Right idx) = case allFunctions ! idx of
+        fun2MASM (Right funcId) = case allFunctions ! funcId of
             f@(ImportedFun i) -> inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
-            DefinedFun (W.Function typ localsTys body) -> inContext (InFunction idx) $ do
+            DefinedFun (W.Function typ localsTys body) ->
               let wasm_args = W.params (types ! fromIntegral typ)
                   wasm_locals = localsTys
 
-                  localAddrMap :: LocalAddrs
-                  (nlocalCells, localAddrMap) =
+                  localAddrs :: LocalAddrs
+                  (nlocalCells, localAddrs) =
                     let argsAndLocals = (wasm_args ++ wasm_locals)
                         sizes = fmap numCells argsAndLocals
                         starts = scanl (+) 0 sizes
@@ -242,13 +242,14 @@ toMASM m =
                   -- was pushed first, etc, with the value for the last argument
                   -- being pushed last and therefore popped first.
                   prelude = reverse $ concat
-                    [ case Map.lookup (fromIntegral k) localAddrMap of
+                    [ case Map.lookup (fromIntegral k) localAddrs of
                         Just (_t, is) -> map M.LocStore is
                         -- TODO: Add back function name to error.
-                        _ -> error ("impossible: prelude of procedure " ++ show idx ++ ", local variable " ++ show k ++ " not found?!")
+                        _ -> error ("impossible: prelude of procedure " ++ show funcId ++ ", local variable " ++ show k ++ " not found?!")
                     | k <- [0..(length wasm_args - 1)]
                     ]
-              instrs <- translateInstrs localAddrMap body 0
+              in inContext (InFunction {funcId, localAddrs}) $ do
+              instrs <- translateInstrs localAddrs body 0
               return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
             _ -> error "impossible: integer fun identifier with StarkifyFun?!"
         fun2MASM (Left nm)
@@ -757,7 +758,7 @@ stackFromBlockN n = do
   asks ((stack <>) . f n)
   where f 0 _ = []
         f n' (InBlock _ _ s:ctxs) = if n' == 1 then s else s <> f (n'-1) ctxs
-        f _ (InFunction _:_) = []
+        f _ (InFunction {}:_) = []
         f n' (_:ctxs) = f n' ctxs
         f _ [] = []
 
@@ -767,8 +768,8 @@ blockNBranchType frames = f frames =<< ask
         f 0 (InBlock Block t _:_) = blockResultType t
         f 0 (InBlock Loop t _:_) = blockParamsType t
         f n (InBlock {}:ctxs) = f (n-1) ctxs
-        f _ (InFunction idx:_) = do
-          fmap W.results . functionType =<< getFunction idx
+        f _ (InFunction {funcId}:_) = do
+          fmap W.results . functionType =<< getFunction funcId
         f n (_:ctxs) = f n ctxs
         f n [] = error $
           "Asked to go up " ++ show frames ++ " blocks, "
