@@ -261,33 +261,37 @@ translateInstrs ::  W.Expression -> Int -> V [M.Instruction]
 translateInstrs [] _k = pure []
 translateInstrs (i@(W.Block t body):is) k = do
   stack <- get
-  params <- blockParamsType t
-  body' <- withLocalState params
+  bt <- blockType t
+  -- TODO(Matthias):
+  -- This whole section reminds me of Twisted Functors.
+  -- W.FuncType forms a monoid, and it acts on [W.ValueType]
+  -- Refactor?
+  body' <- withLocalState (W.params bt)
     $ inContext (InInstruction k i)
     $ inContext (InBlock Block t stack) $
     translateInstrs body 0
-  typed params =<< blockResultType t
+  typedF bt
   is' <- continue i (translateInstrs is (k+1))
   pure $ body' <> is'
 translateInstrs (i@(W.Loop t body):is) k = do
   stack <- get
-  params <- blockParamsType t
-  body' <- withLocalState params
+  bt <- blockType t
+  body' <- withLocalState (W.params bt)
     $ inContext (InInstruction k i)
     $ inContext (InBlock Loop t stack) $
     translateInstrs body 0
-  typed params =<< blockResultType t
+  typedF bt
   is' <- continue i (translateInstrs is (k+1))
   pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
 translateInstrs (i@(W.If t tb fb):is) k = do
-  params <- blockParamsType t
+  bt <- blockType t
   stack <- get
-  let makeContext = withLocalState params
+  let makeContext = withLocalState (W.params bt)
                   . inContext (InBlock If t stack)
   body <- inContext (InInstruction k i) $
       M.If <$> makeContext (translateInstrs tb 0)
            <*> makeContext (translateInstrs fb 0)
-  typed params =<< blockResultType t
+  typedF bt
   is' <- continue i (translateInstrs is (k+1))
   let body' = [M.NEq (Just 0), body]
   pure $ body' <> is'
@@ -756,14 +760,12 @@ functionType (ImportedFun (W.Import _ _ (W.ImportFunc idx))) = getType idx
 functionType (DefinedFun (W.Function {funcType})) = getType funcType
 functionType _ = error "function type of primitive starkify function?"
 
-blockResultType :: W.BlockType -> V W.ResultType
-blockResultType (W.Inline Nothing) = pure []
-blockResultType (W.Inline (Just t')) = pure [t']
-blockResultType (W.TypeIndex ti) = W.results <$> getType ti
-
-blockParamsType :: W.BlockType -> V W.ParamsType
-blockParamsType (W.Inline _) = pure []
-blockParamsType (W.TypeIndex ti) = W.params <$> getType ti
+blockType :: W.BlockType -> V W.FuncType
+blockType (W.Inline Nothing) =
+  pure W.FuncType {params = [], results = [] }
+blockType (W.Inline (Just t)) =
+  pure $ W.FuncType { params = [], results = [t] }
+blockType (W.TypeIndex ti) = getType ti
 
 stackFromBlockN :: Natural -> V W.ResultType
 stackFromBlockN n = do
@@ -778,8 +780,8 @@ stackFromBlockN n = do
 blockNBranchType :: Natural -> V W.ResultType
 blockNBranchType frames = f frames =<< ask
   where f :: Natural -> [Ctx] -> V W.ResultType
-        f 0 (InBlock Block t _:_) = blockResultType t
-        f 0 (InBlock Loop t _:_) = blockParamsType t
+        f 0 (InBlock Block t _:_) = W.results <$> blockType t
+        f 0 (InBlock Loop t _:_) = W.params <$> blockType t
         f n (InBlock {}:ctxs) = f (n-1) ctxs
         f _ (InFunction {funcId}:_) = do
           fmap W.results . functionType =<< getFunction funcId
@@ -1215,6 +1217,13 @@ typed params result = do
   case stripPrefix params stk of
     Nothing -> bad (ExpectedStack params stk)
     Just stack -> put (result <> stack)
+
+typedF :: W.FuncType -> V ()
+typedF W.FuncType {params, results } = do
+  stk <- get
+  case stripPrefix params stk of
+    Nothing -> bad (ExpectedStack params stk)
+    Just stack -> put (results <> stack)
 
 withPrefix :: (W.ValueType -> V a) -> V a
 withPrefix f = get >>= \ case
