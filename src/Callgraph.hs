@@ -1,5 +1,6 @@
 module Callgraph where
 
+import Control.Arrow
 import Control.Monad
 import Data.Containers.ListUtils (nubOrd)
 import Data.Functor ((<&>))
@@ -39,9 +40,10 @@ indirectCalls elems =
 
 directCalls :: V.Vector Function -> [(FunVertex, [FunVertex])]
 directCalls allFunctions =
-  [ (Right caller, findCalls =<< body)
-    | (caller, DefinedFun (W.Function {body})) <- V.toList $ V.indexed allFunctions
-  ]
+  V.toList (V.indexed allFunctions)
+    <&> Right *** \case
+      DefinedFun W.Function {body} -> findCalls =<< body
+      _ -> []
 
 -- TODO: take code in data segment's offset and elem segment's offset etc into account?
 allCalls :: V.Vector Function -> [ElemSegment] -> [((), FunVertex, [FunVertex])]
