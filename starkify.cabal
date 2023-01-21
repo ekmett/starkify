@@ -17,6 +17,7 @@ library
     Continuations,
     Eval,
     MASM,
+    MASM.Callgraph,
     MASM.Interpreter,
     MASM.Miden,
     MASM.Types,
