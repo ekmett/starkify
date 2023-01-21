@@ -20,8 +20,12 @@ data Method = Method
   , body :: [Instruction]
   }
 
+addNames :: Map Text (Map M.ProcName Method) -> Map Text (Map M.ProcName Method)
+addNames = Map.mapWithKey \module' -> Map.mapWithKey \name m@Method {body} ->
+    m {body = M (M.Comment $ module' <> ":" <> name) : body }
+
 library :: Map Text (Map M.ProcName Method)
-library = Map.fromList
+library = addNames $ Map.fromList
   [ ("wasi_snapshot_preview1", Map.fromList
      [ ("fd_read", Method
          { globals = ["stdinSize"]
