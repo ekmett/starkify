@@ -11,6 +11,8 @@ import Data.Text.Lazy qualified as T
 import Data.Foldable
 import Data.Text.Lazy (Text, pack, unpack)
 
+import MASM.Callgraph
+
 import MASM.Types
 
 comment :: String -> Instruction
@@ -31,7 +33,7 @@ runPPMasm = unlines . toList . execWriter . runPpMASM
 ppModule :: Module -> PpMASM ()
 ppModule m = do
   tell $ DList.fromList $ fmap (("use."++) . unpack) (moduleImports m)
-  traverse_ ppProc (moduleProcs m)
+  traverse_ ppProc . sortProcs $ moduleProcs m
   ppProgram (moduleProg m)
 
 ppProc :: (Text, Proc) -> PpMASM ()
