@@ -5,7 +5,7 @@ import Data.Word
 
 import qualified Language.Wasm.Structure as WASM
 import qualified Language.Wasm.Validate as WASM
-import qualified MASM
+import qualified MASM.Types as MASM
 import qualified MASM.Interpreter as MASM
 import qualified MASM.Miden as Miden
 import qualified WASM.WasmTime as WasmTime

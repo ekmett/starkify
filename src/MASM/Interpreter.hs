@@ -2,7 +2,7 @@ module MASM.Interpreter where
 
 import Data.Bits ( Bits(shiftR, shiftL), (.&.), xor, (.|.) )
 import Data.Word ( Word32, Word64 )
-import MASM
+import MASM.Types
 import Data.Maybe (fromMaybe)
 import Data.IntMap.Strict qualified as IntMap
 

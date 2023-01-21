@@ -19,6 +19,7 @@ library
     MASM,
     MASM.Interpreter,
     MASM.Miden,
+    MASM.Types,
     Validation,
     W2M,
     W2M.Common,
