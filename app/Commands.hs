@@ -10,8 +10,9 @@ import Data.Text.Lazy qualified as T
 import Data.Word
 import GHC.Generics
 import Language.Wasm qualified as Wasm
-import MASM (ppMASM, Module)
+import MASM (ppMASM)
 import MASM.Miden (runMidenVerify, runMiden, KeepFile (..))
+import MASM.Types (Module)
 import Options
 import System.Exit
 import System.FilePath

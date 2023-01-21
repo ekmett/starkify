@@ -31,6 +31,7 @@ import Language.Wasm.Structure qualified as W
 
 import Continuations qualified as C
 import MASM qualified as M
+import MASM.Types qualified as M
 import MASM.Interpreter (toFakeW64, FakeW64 (..))
 import Validation
 import WASI qualified

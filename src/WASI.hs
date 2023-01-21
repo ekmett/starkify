@@ -6,7 +6,8 @@ import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Text.Lazy (Text)
 
-import MASM qualified as M
+import MASM.Types qualified as M
+
 
 data Instruction = M M.Instruction -- MASM instruction
                  | Load Text -- Read field from reserved memory address to the stack

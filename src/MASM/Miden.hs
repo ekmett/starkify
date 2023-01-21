@@ -3,6 +3,7 @@ module MASM.Miden where
 import Data.List
 import Data.Word
 import MASM
+import MASM.Types
 import System.Directory
 import System.Exit
 import System.FilePath
