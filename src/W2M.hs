@@ -110,8 +110,8 @@ toMASM m =
   inContext (InModule $
     ModuleInfo types allFunctions (W.exports m) (W.globals m) memBeginning globalsAddrMap) $ do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
-  globalsInit <- inContext GlobalsInit getGlobalsInit
-  datasInit <- inContext DatasInit getDatasInit
+  globalsInit <- getGlobalsInit
+  datasInit <- getDatasInit
   when (null entryFunctions) badNoMain
   procs <- catMaybes <$> traverse
     (\idx -> (liftA2 . liftA2) (,) (Just <$> procName idx) (fun2MASM idx))
@@ -188,7 +188,8 @@ toMASM m =
         sortedFunctions = getSortedFunctions allFunctions entryFunctions (W.elems m)
 
         getDatasInit :: V [M.Instruction]
-        getDatasInit = concat <$> traverse getDataInit (W.datas m)
+        getDatasInit = inContext DatasInit $
+          concat <$> traverse getDataInit (W.datas m)
 
         getDataInit :: W.DataSegment -> V [M.Instruction]
         getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
@@ -203,7 +204,8 @@ toMASM m =
         getDataInit _ = badNoMultipleMem
 
         getGlobalsInit :: V [M.Instruction]
-        getGlobalsInit = concat <$> zipWithM getGlobalInit [0..] (W.globals m)
+        getGlobalsInit = inContext GlobalsInit $
+          concat <$> zipWithM getGlobalInit [0..] (W.globals m)
 
         getGlobalInit :: Int -> W.Global -> V [M.Instruction]
         getGlobalInit k g =
