@@ -302,7 +302,8 @@ translateInstrs = foldr f (pure []) . zip [0..] where
   f (instructionCount, i) localExit = do
     localExit' <- fixCurrentContext localExit
     inContext (InInstruction instructionCount i) $
-      translateControlInstr i localExit'
+      translateControlInstr i localExit' <|>
+      ((<>) <$> translateInstr i <*> localExit')
 
 translateControlInstr :: W.Instruction Natural -> V [M.Instruction] -> V [M.Instruction]
 translateControlInstr i@(W.Block t body) localExit = do
@@ -380,8 +381,7 @@ translateControlInstr (W.CallIndirect tyIdx) localExit =
       (typed (W.I32:reverse params) ret $> [M.Exec starkifyCallIndirectName])
       localExit
 
-translateControlInstr i localExit = do
-  (<>) <$> translateInstr i <*> localExit
+translateControlInstr i _ = unsupportedInstruction i
 
 exportedName :: Integral i => i -> V (Maybe FunName)
 exportedName i = do
