@@ -122,7 +122,7 @@ toMASM m =
   entryProcNames <- traverse procName entryFunctions
 
   M.Module ["std::sys", "std::math::u64"]
-    <$> (zip procNames <$> sequence procs')
+    <$> (Map.fromList . zip procNames <$> sequence procs')
     -- TODO: Do we need to perform stack cleanup even if proc_exit is invoked?
     <*> return (M.Program $
       globalsInit
