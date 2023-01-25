@@ -21,16 +21,13 @@ type PrimFun = FunName
 
 data ModuleInfo = ModuleInfo
   { types :: Vector W.FuncType
-  , functions :: Vector Function
+  , funcTypes :: Vector W.FuncType
   , exports :: [W.Export]
   , globals :: [W.Global]
   , memBeginning :: MasmAddr
   , globalsAddrMap :: Vector MasmAddr
+  , wasiGlobalsAddrMap :: Map Text MasmAddr
   }
-  deriving (Eq, Show)
-
--- TODO(Matthias): Inline function types, instead of by reference only.
-data Function = ImportedFun W.Import | StarkifyFun FunName | DefinedFun W.Function
   deriving (Eq, Show)
 
 -- Primitive functions
@@ -38,11 +35,3 @@ data Function = ImportedFun W.Import | StarkifyFun FunName | DefinedFun W.Functi
 -- | The special name reserved for the 'starkify_call_indirect' procedure
 starkifyCallIndirectName :: Text
 starkifyCallIndirectName = "starkify_call_indirect"
-
--- -- | We simulate that the function is part of the WASM module, with index
--- --   @largest function index in the module + 1@.
--- starkifyCallIndirectId :: Integral a => Vector Function -> a
--- starkifyCallIndirectId funs = fromIntegral (V.length funs)
-
-primitiveFuns :: [Function]
-primitiveFuns = [StarkifyFun starkifyCallIndirectName]
