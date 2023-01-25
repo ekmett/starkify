@@ -55,6 +55,7 @@ data Ctx
   | InFunction { funcId :: Int, localAddrs :: LocalAddrs }
   | GlobalsInit
   | DatasInit
+  | ImportInit
   | Import
   | Typechecker
   | InInstruction Int (W.Instruction Natural) -- func id, instruction #
@@ -249,6 +250,7 @@ ppErrCtx (InModule _) = "in module"
 ppErrCtx (InFunction {funcId}) = "of function " ++ show funcId
 ppErrCtx DatasInit = "in data section"
 ppErrCtx GlobalsInit = "in globals initialisation"
+ppErrCtx ImportInit = "in import initialisation"
 ppErrCtx Import = "in import"
 ppErrCtx Typechecker = "in typechecking"
 ppErrCtx (InInstruction k i) = "in instruction #" ++ show k ++ ": " ++ take 100 (show i) ++ "  ..."
