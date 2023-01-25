@@ -106,9 +106,7 @@ getGlobalAddr k = do
   pure $ globalsAddrMap ! fromIntegral k
 
 toMASM :: W.Module -> V M.Module
-toMASM m =
-  inContext (InModule $
-    ModuleInfo types allFunctions (W.exports m) (W.globals m) memBeginning globalsAddrMap) $ do
+toMASM m = inContext InModule { moduleInfo } do
   -- TODO: don't throw away main's type, we might want to check it and inform how the program can be called?
   globalsInit <- getGlobalsInit
   datasInit <- getDatasInit
@@ -130,137 +128,142 @@ toMASM m =
       ++ concat methodInits
       ++ fmap M.Exec entryProcNames)
 
-  where wasiGlobals :: [Text]
-        wasiGlobals = [ g
-                      | Right i <- toList sortedFunctions
-                      , method <- maybeToList $ wasiImport (allFunctions ! i)
-                      , g <- WASI.globals method ]
+  where
+    moduleInfo = ModuleInfo
+      { types, functions
+      , exports = W.exports m, globals = W.globals m
+      , memBeginning, globalsAddrMap }
+    wasiGlobals :: [Text]
+    wasiGlobals = [ g
+                  | Right i <- toList sortedFunctions
+                  , method <- maybeToList $ wasiImport (functions ! i)
+                  , g <- WASI.globals method ]
 
-        wasiImport :: Function -> Maybe WASI.Method
-        wasiImport (ImportedFun (W.Import module' name _)) = Map.lookup name =<< Map.lookup module' WASI.library
-        wasiImport _ = Nothing
+    wasiImport :: Function -> Maybe WASI.Method
+    wasiImport (ImportedFun (W.Import module' name _)) = Map.lookup name =<< Map.lookup module' WASI.library
+    wasiImport _ = Nothing
 
 
-        wasiGlobalsAddrMap :: Map Text MasmAddr
-        wasiGlobalsAddrMap = Map.fromList (zip wasiGlobals [firstNonReservedAddress..])
-        memBeginning' = maximum (firstNonReservedAddress : Map.elems wasiGlobalsAddrMap)
+    wasiGlobalsAddrMap :: Map Text MasmAddr
+    wasiGlobalsAddrMap = Map.fromList (zip wasiGlobals [firstNonReservedAddress..])
+    memBeginning' = maximum (firstNonReservedAddress : Map.elems wasiGlobalsAddrMap)
 
-        ncells = numCells . globalTypeToValue . W.globalType
+    ncells = numCells . globalTypeToValue . W.globalType
 
-        globalsAddrMap' = scanl (+) memBeginning' $ fmap ncells (W.globals m)
+    globalsAddrMap' = scanl (+) memBeginning' $ fmap ncells (W.globals m)
 
-        globalsAddrMap :: Vector MasmAddr
-        globalsAddrMap = V.fromList (init globalsAddrMap')
-        memBeginning :: MasmAddr
-        memBeginning = last globalsAddrMap'
+    globalsAddrMap :: Vector MasmAddr
+    globalsAddrMap = V.fromList (init globalsAddrMap')
+    memBeginning :: MasmAddr
+    memBeginning = last globalsAddrMap'
 
-        translateGlobals :: WASI.Instruction -> V [M.Instruction]
-        translateGlobals (WASI.M i) = pure [i]
-        translateGlobals (WASI.Load n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemLoad (Just a)]) (Map.lookup n wasiGlobalsAddrMap)
-        translateGlobals (WASI.Store n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemStore (Just a)]) (Map.lookup n wasiGlobalsAddrMap)
+    translateGlobals :: WASI.Instruction -> V [M.Instruction]
+    translateGlobals (WASI.M i) = pure [i]
+    translateGlobals (WASI.Load n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemLoad (Just a)]) (Map.lookup n wasiGlobalsAddrMap)
+    translateGlobals (WASI.Store n) = maybe (badNamedGlobalRef n) (\ a -> pure [M.MemStore (Just a)]) (Map.lookup n wasiGlobalsAddrMap)
 
-        translateProc :: Either WASI.Method M.Proc -> V M.Proc
-        translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
-        translateProc (Right p) = pure p
+    translateProc :: Either WASI.Method M.Proc -> V M.Proc
+    translateProc (Left method) = M.Proc (WASI.locals method) . concat <$> traverse translateGlobals (WASI.body method)
+    translateProc (Right p) = pure p
 
-        -- Each compiler has a different convention for exporting the main function, and the
-        -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
-        -- currently pass input to the main function, we can proceed if either is present (and we
-        -- should use both if both are present).
-        entryFunctions :: [FunVertex]
-        entryFunctions = Right . fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
+    -- Each compiler has a different convention for exporting the main function, and the
+    -- https://www.w3.org/TR/wasm-core-1/#start-function is something different. Since we don't
+    -- currently pass input to the main function, we can proceed if either is present (and we
+    -- should use both if both are present).
+    entryFunctions :: [FunVertex]
+    entryFunctions = Right . fromIntegral <$> nubOrd (maybeToList startFunIdx <> maybeToList mainFunIdx)
 
-        -- An export with an empty string is considered to be a "default export".
-        -- (https://github.com/bytecodealliance/wasmtime/blob/b0939f66267dc99b56f59fdb7c1db4fce2f578c6/crates/wasmtime/src/linker.rs#L1187)
-        mainFunIdx = lookup "main" exportedFunctions
-                 <|> lookup "_start" exportedFunctions
-                 <|> lookup "" exportedFunctions
+    -- An export with an empty string is considered to be a "default export".
+    -- (https://github.com/bytecodealliance/wasmtime/blob/b0939f66267dc99b56f59fdb7c1db4fce2f578c6/crates/wasmtime/src/linker.rs#L1187)
+    mainFunIdx = lookup "main" exportedFunctions
+              <|> lookup "_start" exportedFunctions
+              <|> lookup "" exportedFunctions
 
-        exportedFunctions :: [(FunName, W.FuncIndex)]
-        exportedFunctions = [(name, idx) | (W.Export name (W.ExportFunc idx)) <- W.exports m]
+    exportedFunctions :: [(FunName, W.FuncIndex)]
+    exportedFunctions = [(name, idx) | (W.Export name (W.ExportFunc idx)) <- W.exports m]
 
-        startFunIdx
-          | Just (W.StartFunction k) <- W.start m = Just k
-          | otherwise = Nothing
+    startFunIdx
+      | Just (W.StartFunction k) <- W.start m = Just k
+      | otherwise = Nothing
 
-        -- Miden requires procedures to be defined before any execs that reference them.
-        sortedFunctions :: [Either PrimFun Int]
-        sortedFunctions = getSortedFunctions allFunctions entryFunctions (W.elems m)
+    -- Miden requires procedures to be defined before any execs that reference them.
+    sortedFunctions :: [Either PrimFun Int]
+    sortedFunctions = getSortedFunctions functions entryFunctions (W.elems m)
 
-        getDatasInit :: V [M.Instruction]
-        getDatasInit = inContext DatasInit $
-          concat <$> traverse getDataInit (W.datas m)
+    getDatasInit :: V [M.Instruction]
+    getDatasInit = inContext DatasInit $
+      concat <$> traverse getDataInit (W.datas m)
 
-        getDataInit :: W.DataSegment -> V [M.Instruction]
-        getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
+    getDataInit :: W.DataSegment -> V [M.Instruction]
+    getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
+      -- TODO(Matthias): Reset instruction count?
+      offset_mexpr <- translateInstrs offset_wexpr
+      pure $ offset_mexpr ++
+              [ M.Push 4, M.IDiv             -- [offset_bytes/4, ...]
+              , M.Push memBeginning, M.IAdd  -- [offset_bytes/4+memBeginning, ...] =
+              ] ++                           -- [addr_u32, ...]
+              writeW32s (BS.unpack bytes) ++ -- [addr_u32+len(bytes)/4, ...]
+              [ M.Drop ]                     -- [...]
+    getDataInit _ = badNoMultipleMem
+
+    getGlobalsInit :: V [M.Instruction]
+    getGlobalsInit = inContext GlobalsInit $
+      concat <$> zipWithM getGlobalInit [0..] (W.globals m)
+
+    getGlobalInit :: Int -> W.Global -> V [M.Instruction]
+    getGlobalInit k g =
+      -- TODO(Matthias): Reset instruction count?
+      translateInstrs (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
+
+    -- "Functions are referenced through function indices, starting with the smallest index not referencing a function import."
+    --                                              (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-module)
+    -- "Definitions are referenced with zero-based indices."
+    --                                             (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-funcidx)
+    functions :: Vector Function
+    functions = V.fromList $
+      [ ImportedFun f | f@(W.Import _ _ (W.ImportFunc _)) <- W.imports m ] <>
+      [ DefinedFun f | f <- W.functions m ] <>
+      primitiveFuns
+
+    types :: Vector W.FuncType
+    types = V.fromList $ W.types m
+
+    fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
+    fun2MASM (Right funcId) = case functions ! funcId of
+        f@(ImportedFun i) -> inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
+        DefinedFun (W.Function typ localsTys body) ->
+          let wasm_args = W.params (types ! fromIntegral typ)
+              wasm_locals = localsTys
+
+              localAddrs :: LocalAddrs
+              (nlocalCells, localAddrs) =
+                let argsAndLocals = (wasm_args ++ wasm_locals)
+                    sizes = fmap numCells argsAndLocals
+                    starts = scanl (+) 0 sizes
+                    addresses = zipWith (\start end -> [start..end-1])
+                      starts (drop 1 starts)
+                  in (last starts, Map.fromList $ zip [0..] (zip argsAndLocals addresses))
+
+              -- the function starts by populating the first nargs local vars
+              -- with the topmost nargs values on the stack, removing them from
+              -- the stack as it goes. it assumes the value for the first arg
+              -- was pushed first, etc, with the value for the last argument
+              -- being pushed last and therefore popped first.
+              prelude = reverse $ concat
+                [ case Map.lookup (fromIntegral k) localAddrs of
+                    Just (_t, is) -> map M.LocStore is
+                    -- TODO: Add back function name to error.
+                    _ -> error ("impossible: prelude of procedure " ++ show funcId ++ ", local variable " ++ show k ++ " not found?!")
+                | k <- [0..(length wasm_args - 1)]
+                ]
+          in inContext (InFunction {funcId, localAddrs}) $ do
           -- TODO(Matthias): Reset instruction count?
-          offset_mexpr <- translateInstrs offset_wexpr
-          pure $ offset_mexpr ++
-                 [ M.Push 4, M.IDiv             -- [offset_bytes/4, ...]
-                 , M.Push memBeginning, M.IAdd  -- [offset_bytes/4+memBeginning, ...] =
-                 ] ++                           -- [addr_u32, ...]
-                 writeW32s (BS.unpack bytes) ++ -- [addr_u32+len(bytes)/4, ...]
-                 [ M.Drop ]                     -- [...]
-        getDataInit _ = badNoMultipleMem
-
-        getGlobalsInit :: V [M.Instruction]
-        getGlobalsInit = inContext GlobalsInit $
-          concat <$> zipWithM getGlobalInit [0..] (W.globals m)
-
-        getGlobalInit :: Int -> W.Global -> V [M.Instruction]
-        getGlobalInit k g =
-          -- TODO(Matthias): Reset instruction count?
-          translateInstrs (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
-
-        -- "Functions are referenced through function indices, starting with the smallest index not referencing a function import."
-        --                                              (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-module)
-        -- "Definitions are referenced with zero-based indices."
-        --                                             (https://webassembly.github.io/spec/core/syntax/modules.html#syntax-funcidx)
-        allFunctions :: Vector Function
-        allFunctions = V.fromList $
-          [ ImportedFun f | f@(W.Import _ _ (W.ImportFunc _)) <- W.imports m ] <>
-          [ DefinedFun f | f <- W.functions m ] <>
-          primitiveFuns
-
-        types :: Vector W.FuncType
-        types = V.fromList $ W.types m
-
-        fun2MASM :: Either PrimFun Int -> V (Maybe (Either WASI.Method M.Proc))
-        fun2MASM (Right funcId) = case allFunctions ! funcId of
-            f@(ImportedFun i) -> inContext Import $ maybe (badImport i) (pure . Just . Left) (wasiImport f)
-            DefinedFun (W.Function typ localsTys body) ->
-              let wasm_args = W.params (types ! fromIntegral typ)
-                  wasm_locals = localsTys
-
-                  localAddrs :: LocalAddrs
-                  (nlocalCells, localAddrs) =
-                    let argsAndLocals = (wasm_args ++ wasm_locals)
-                        sizes = fmap numCells argsAndLocals
-                        starts = scanl (+) 0 sizes
-                        addresses = zipWith (\start end -> [start..end-1])
-                          starts (drop 1 starts)
-                      in (last starts, Map.fromList $ zip [0..] (zip argsAndLocals addresses))
-
-                  -- the function starts by populating the first nargs local vars
-                  -- with the topmost nargs values on the stack, removing them from
-                  -- the stack as it goes. it assumes the value for the first arg
-                  -- was pushed first, etc, with the value for the last argument
-                  -- being pushed last and therefore popped first.
-                  prelude = reverse $ concat
-                    [ case Map.lookup (fromIntegral k) localAddrs of
-                        Just (_t, is) -> map M.LocStore is
-                        -- TODO: Add back function name to error.
-                        _ -> error ("impossible: prelude of procedure " ++ show funcId ++ ", local variable " ++ show k ++ " not found?!")
-                    | k <- [0..(length wasm_args - 1)]
-                    ]
-              in inContext (InFunction {funcId, localAddrs}) $ do
-              -- TODO(Matthias): Reset instruction count?
-              instrs <- translateInstrs body
-              return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
-            _ -> error "impossible: integer fun identifier with StarkifyFun?!"
-        fun2MASM (Left nm)
-              | nm == starkifyCallIndirectName = Just . Right <$> mkStarkifyCallIndirect (procName . Right . fromIntegral) m
-              | otherwise                      = badStarkifyFun nm
+          instrs <- translateInstrs body
+          return $ Just (Right (M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)))
+        _ -> error "impossible: integer fun identifier with StarkifyFun?!"
+    fun2MASM (Left nm)
+          | nm == starkifyCallIndirectName = Just . Right <$> mkStarkifyCallIndirect (procName . Right . fromIntegral) m
+          | otherwise                      = badStarkifyFun nm
 
 bumpInstructionCount :: V ()
 bumpInstructionCount =
