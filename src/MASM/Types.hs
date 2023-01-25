@@ -8,6 +8,7 @@ module MASM.Types where
 
 import Control.Monad.Writer.Strict
 import Data.DList qualified as DList
+import Data.Map (Map)
 import Data.String
 import Data.Text.Lazy (Text)
 import Data.Typeable
@@ -21,7 +22,7 @@ type ModName = Text
 
 data Module = Module
   { moduleImports :: [ModName],
-    moduleProcs :: [(ProcName, Proc)], -- could be an ordered Map to prevent duplicate names
+    moduleProcs :: Map ProcName Proc,
     moduleProg :: Program
   }
   deriving (Eq, Ord, Show, Generic, Typeable)
