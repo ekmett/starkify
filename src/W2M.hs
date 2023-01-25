@@ -160,7 +160,6 @@ getDatasInit datas = inContext DatasInit $
 getDataInit :: W.DataSegment -> V [M.Instruction]
 getDataInit (W.DataSegment 0 offset_wexpr bytes) = do
   memBeginning <- getMemBeginning
-  -- TODO(Matthias): Reset instruction count?
   offset_mexpr <- translateInstrs offset_wexpr
   pure $ offset_mexpr ++
           [ M.Push 4, M.IDiv             -- [offset_bytes/4, ...]
@@ -176,7 +175,6 @@ getGlobalsInit globals = inContext GlobalsInit $
 
 getGlobalInit :: Int -> W.Global -> V [M.Instruction]
 getGlobalInit k g =
-  -- TODO(Matthias): Reset instruction count?
   translateInstrs (W.initializer g ++ [W.SetGlobal $ fromIntegral k])
 
 initImport :: W.Import -> V [M.Instruction]
@@ -284,7 +282,6 @@ fun2MASM (W.Function typ wasm_locals body) funcId = do
             | k <- [0..length wasm_args - 1]
             ]
       inContext InFunction {funcId, localAddrs} do
-      -- TODO(Matthias): Reset instruction count?
         instrs <- translateInstrs body
         return $ M.Proc (fromIntegral nlocalCells) (prelude ++ instrs)
 
