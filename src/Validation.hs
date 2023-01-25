@@ -24,11 +24,10 @@ import Data.Text.Lazy qualified as LT
 import Data.Word
 import W2M.Common ( ModuleInfo(..), LocalAddrs)
 
-data VState = VState { stack :: W.ResultType, instructionCount :: Int }
-newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () VState) a }
+newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
 
-deriving instance MonadState VState (Validation e)
+deriving instance MonadState W.ResultType (Validation e)
 deriving instance (Semigroup e) => MonadValidate e (Validation e)
 deriving instance MonadReader [Ctx] (Validation e)
 deriving instance MonadWriter () (Validation e)
@@ -45,7 +44,7 @@ instance Monoid e => Alternative (Validation e) where
 bad :: e -> Validation (DList.DList (Error e)) a
 bad e = do
   ctxs <- ask
-  VState {stack} <- get
+  stack <- get
   refute [Error ctxs stack e]
 
 data Block = Block | Loop | If deriving Show
@@ -66,15 +65,17 @@ data Ctx
 inContext :: Ctx -> Validation e a -> Validation e a
 inContext c = local (c:)
 
-withLocalState :: Semigroup e => VState -> Validation e a -> Validation e a
-withLocalState localState (Validation v) = do
+fixCurrentContext :: Validation e a -> Validation e (Validation e a)
+fixCurrentContext v = do
   ctx <- ask
-  case runRWS (runValidateT v) ctx localState of
-    (Left errs, _state, w) -> tell w >> refute errs
-    (Right a, _state, w) -> tell w $> a
+  pure $ local (const ctx) v
 
 withLocalStack :: Semigroup e => W.ResultType -> Validation e a -> Validation e a
-withLocalStack localStack = withLocalState (VState localStack 0)
+withLocalStack localStack (Validation v) = do
+  ctx <- ask
+  case runRWS (runValidateT v) ctx localStack of
+    (Left errs, _state, w) -> tell w >> refute errs
+    (Right a, _state, w) -> tell w $> a
 
 getModuleInfo :: V ModuleInfo
 getModuleInfo = do
@@ -260,7 +261,7 @@ ppErrCtx CallIndirectFun = "of generated indirect call function"
 type V = Validation (DList.DList (Error ErrorData))
 
 runValidation :: V a -> IO a
-runValidation (Validation e) = case runRWS (runValidateT e) [] (VState [] 0) of
+runValidation (Validation e) = case runRWS (runValidateT e) [] [] of
   (Left errs, _i, _w) -> error . unlines . toList .
     concatMap ppErr . sortOn errData $ toList errs
   (Right a, _i, _w) -> return a
