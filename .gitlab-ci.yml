@@ -10,6 +10,13 @@ gitleaks:
   stage: test
   allow_failure: true
 
+exe:
+  tags:
+    - nixos-starkify-runner
+  script:
+    - nix-shell --run "cabal build exe:starkify"
+    - nix-shell --run "cabal run starkify --help"
+
 testfiles:
   stage: test
   tags:
