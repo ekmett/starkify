@@ -73,6 +73,9 @@ numCells W.I32 = 1
 numCells W.I64 = 2
 numCells t = error $ "unsupported value type: " ++ show t
 
+ncells :: W.Global -> MasmAddr
+ncells = numCells . globalTypeToValue . W.globalType
+
 globalTypeToValue :: W.GlobalType -> W.ValueType
 globalTypeToValue (W.Const vt) = vt
 globalTypeToValue (W.Mut vt) = vt
@@ -147,8 +150,6 @@ toMASM m = inContext InModule { moduleInfo } do
     wasiGlobalsAddrMap :: Map Text MasmAddr
     wasiGlobalsAddrMap = Map.fromList (zip wasiGlobals [firstNonReservedAddress..])
     memBeginning' = maximum (firstNonReservedAddress : Map.elems wasiGlobalsAddrMap)
-
-    ncells = numCells . globalTypeToValue . W.globalType
 
     globalsAddrMap' = scanl (+) memBeginning' $ fmap ncells (W.globals m)
 
