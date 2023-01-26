@@ -15,8 +15,8 @@ import MASM.Callgraph
 
 import MASM.Types
 
-comment :: String -> Instruction
-comment cmt = Comment (pack cmt)
+comment :: Show a => a -> Instruction
+comment = Comment . pack . show
 
 accessibleStackDepth :: Int
 accessibleStackDepth = 16

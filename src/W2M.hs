@@ -294,7 +294,7 @@ import2MASM import_
       is <- concat <$> traverse translateGlobals (WASI.body method)
       pure M.Proc
         { procNLocals
-        , procInstrs = M.comment (show import_) : is }
+        , procInstrs = M.comment import_ : is }
 
 translateInstrs :: W.Expression -> V [M.Instruction]
 translateInstrs = foldr f (pure []) . zip [0..] where
@@ -303,7 +303,8 @@ translateInstrs = foldr f (pure []) . zip [0..] where
     localExit' <- fixCurrentContext localExit
     inContext (InInstruction instructionCount i) $
       translateControlInstr i localExit' <|>
-      ((<>) <$> translateInstr i <*> localExit')
+      ((<>) <$> translateInstr' i <*> localExit')
+  translateInstr' i = (M.comment i :) <$> translateInstr i
 
 translateControlInstr :: W.Instruction Natural -> V [M.Instruction] -> V [M.Instruction]
 translateControlInstr i@(W.Block t body) localExit = do
@@ -313,44 +314,47 @@ translateControlInstr i@(W.Block t body) localExit = do
   -- This whole section reminds me of Twisted Functors.
   -- W.FuncType forms a monoid, and it acts on [W.ValueType]
   -- Refactor?
+  let ctx = InBlock Block t stack
   body' <-
-      inContext (InBlock Block t stack)
+      inContext ctx
     $ withLocalStack (W.params bt)
     $ translateInstrs body
   typedF bt
   is' <- continue i localExit
-  pure $ body' <> is'
+  pure $ M.comment ctx : body' <> is'
 translateControlInstr i@(W.Loop t body) localExit = do
   stack <- get
   bt <- blockType t
+  let ctx = InBlock Loop t stack
   body' <-
-      inContext (InBlock Loop t stack)
+      inContext ctx
     $ withLocalStack (W.params bt)
     $ translateInstrs body
   typedF bt
   is' <- continue i localExit
-  pure $ [M.Push 1, M.While (body' <> continueLoop)] <> is'
+  pure $ [M.comment ctx, M.Push 1, M.While (body' <> continueLoop)] <> is'
 translateControlInstr i@(W.If t tb fb) localExit = do
   bt <- blockType t
   stack <- get
-  let makeContext = withLocalStack (W.params bt)
-                  . inContext (InBlock If t stack)
+  let ctx = InBlock If t stack
+      makeContext = withLocalStack (W.params bt)
+                  . inContext ctx
   body <-
       M.If <$> makeContext (translateInstrs tb)
            <*> makeContext (translateInstrs fb)
   typedF bt
   is' <- continue i localExit
   let body' = [M.NEq (Just 0), body]
-  pure $ body' <> is'
+  pure $ M.comment ctx : body' <> is'
 
-translateControlInstr (W.Br idx) _ = branch idx
-translateControlInstr (W.BrIf idx) localExit = do
+translateControlInstr i@(W.Br idx) _ = (M.comment i:) <$> branch idx
+translateControlInstr i@(W.BrIf idx) localExit = do
   typed [W.I32] []
   br <- branch idx
   is' <- localExit
-  pure [M.NEq (Just 0), M.If br is']
+  pure [M.comment i, M.NEq (Just 0), M.If br is']
 -- Note: br_table could save 2 cycles by not duping and dropping in the final case (for br_tables with 1 or more cases).
-translateControlInstr (W.BrTable cases defaultIdx) _ = do
+translateControlInstr i@(W.BrTable cases defaultIdx) _ = do
   typed [W.I32] []
   let branch' = fmap (M.Drop :) . branch
       -- Step through our table,
@@ -360,25 +364,26 @@ translateControlInstr (W.BrTable cases defaultIdx) _ = do
       step br rest =
         [ M.Dup 0, M.Eq (Just 0)
         , M.If br (M.Sub (Just 1) : rest)]
-  foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
-translateControlInstr W.Return _ = branch . fromIntegral =<< blockDepth
+  (M.comment i :) . foldr1 step <$> mapM branch' (cases ++ [defaultIdx])
+translateControlInstr i@W.Return _ =
+  fmap (M.comment i :) . branch . fromIntegral =<< blockDepth
 translateControlInstr i@W.Unreachable _ = pure
-  [M.comment $ show i, M.Push 0, M.Assert]
-translateControlInstr (W.Call idx) localExit = do
+  [M.comment i, M.Push 0, M.Assert]
+translateControlInstr i@(W.Call idx) localExit = do
   W.FuncType params res <- getFunctionType idx
   params' <- checkTypes params
   res' <- checkTypes res
   let name = procName (fromIntegral idx :: Integer)
   (<>) <$>
-    (typed (reverse params') res' $> [M.Exec name])
+    (typed (reverse params') res' $> [M.comment i, M.Exec name])
     <*> localExit
 
-translateControlInstr (W.CallIndirect tyIdx) localExit =
+translateControlInstr i@(W.CallIndirect tyIdx) localExit =
   getType tyIdx >>= \(W.FuncType paramsTys retTys) -> do
     params <- checkTypes paramsTys
     ret    <- checkTypes retTys
     liftA2 (<>)
-      (typed (W.I32:reverse params) ret $> [M.Exec starkifyCallIndirectName])
+      (typed (W.I32:reverse params) ret $> [M.comment i, M.Exec starkifyCallIndirectName])
       localExit
 
 translateControlInstr i _ = unsupportedInstruction i
