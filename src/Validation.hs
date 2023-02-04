@@ -8,6 +8,7 @@ import Control.Applicative
 import Control.Monad.Validate
 import Control.Monad.State
 import Control.Monad.RWS.Strict
+import Data.Bifunctor(first)
 import Data.DList qualified as DList
 import Data.Foldable
 import Data.Functor ((<&>), ($>))
@@ -24,11 +25,13 @@ import Data.Text.Lazy qualified as LT
 import Data.Word
 import W2M.Common ( ModuleInfo(..), LocalAddrs)
 
-newtype Validation e a = Validation { getV :: ValidateT e (RWS [Ctx] () W.ResultType) a }
+-- Our error type is (Any, e).  The first element indicates whether
+-- we have cut off non-determinism.  See `Alternative` instance below.
+newtype Validation e a = Validation { getV :: ValidateT (Any, e) (RWS [Ctx] () W.ResultType) a }
   deriving (Generic, Typeable, Functor, Applicative, Monad)
 
 deriving instance MonadState W.ResultType (Validation e)
-deriving instance (Semigroup e) => MonadValidate e (Validation e)
+deriving instance (Semigroup e) => MonadValidate (Any, e) (Validation e)
 deriving instance MonadReader [Ctx] (Validation e)
 deriving instance MonadWriter () (Validation e)
 
@@ -37,15 +40,21 @@ instance Monoid e => Alternative (Validation e) where
   Validation a <|> Validation b = Validation $ do
     lift (runValidateT a) >>= \case
       Right ra -> return ra
-      Left ea -> lift (runValidateT b) >>= \case
-        Right rb -> return rb
-        Left eb -> refute $ ea <> eb
+      Left ea@(Any True, _) ->
+        refute ea
+      Left (Any False, _) ->
+        lift (runValidateT b) >>= \case
+          Right rb -> return rb
+          Left eb -> refute eb
+
+cut :: Semigroup e => Validation e a -> Validation e a
+cut (Validation m) = Validation $ mapErrors (first . const $ Any True) m
 
 bad :: e -> Validation (DList.DList (Error e)) a
 bad e = do
   ctxs <- ask
   stack <- get
-  refute [Error ctxs stack e]
+  refute (mempty, [Error ctxs stack e])
 
 data Block = Block | Loop | If deriving Show
 
@@ -263,5 +272,5 @@ type V = Validation (DList.DList (Error ErrorData))
 runValidation :: V a -> IO a
 runValidation (Validation e) = case runRWS (runValidateT e) [] [] of
   (Left errs, _i, _w) -> error . unlines . toList .
-    concatMap ppErr . sortOn errData $ toList errs
+    concatMap ppErr . sortOn errData . toList . snd $ errs
   (Right a, _i, _w) -> return a

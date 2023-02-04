@@ -303,7 +303,7 @@ translateInstrs = foldr f (pure []) . zip [0..] where
     localExit' <- fixCurrentContext localExit
     inContext (InInstruction instructionCount i) $
       translateControlInstr i localExit' <|>
-      ((<>) <$> translateInstr' i <*> localExit')
+      ((<>) <$> cut (translateInstr' i) <*> localExit')
   translateInstr' i = (M.comment i :) <$> translateInstr i
 
 translateControlInstr :: W.Instruction Natural -> V [M.Instruction] -> V [M.Instruction]
@@ -410,7 +410,7 @@ translateInstr (W.IUnOp bitsz op) = translateIUnOp bitsz op
 translateInstr (W.IBinOp bitsz op) = translateIBinOp bitsz op
 translateInstr W.I32Eqz = typed [W.I32] [W.I32] $> [M.IEq (Just 0)]
 translateInstr (W.IRelOp bitsz op) = translateIRelOp bitsz op
-translateInstr W.Select = asum
+translateInstr W.Select = cut $ asum
   [ typed [W.I32, W.I32, W.I32] [W.I32] $> oneCell
   , typed [W.I32, W.F32, W.F32] [W.F32] $> oneCell
   , typed [W.I32, W.I64, W.I64] [W.I64] $> twoCells
