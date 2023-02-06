@@ -68,7 +68,7 @@ let
     pname = "cairo-lang";
     src = pkgs.fetchzip {
       url = "https://github.com/starkware-libs/cairo-lang/releases/download/v${lock.cairo-lang.version}/cairo-lang-${lock.cairo-lang.version}.zip";
-      sha256 = "sha256-vr5jzruf6cnM94FHXtWeDCZ0Qm+EsDjIEgMNCOtWjTA=";
+      sha256 = lock.cairo-lang.sha256;
     };
     version = lock.cairo-lang.version;
     nativeBuildInputs = [ python.pkgs.pythonRelaxDepsHook ];
