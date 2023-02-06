@@ -12,5 +12,6 @@ pkgs.mkShell {
     miden
     rust
     ghc
+    cairo-lang
   ];
 }
