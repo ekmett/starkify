@@ -56,5 +56,36 @@ let
     ++ starkify.getCabalDeps.libraryHaskellDepends
     ++ starkify.getCabalDeps.testHaskellDepends)
   );
+
+  python = pkgs.python39;
+  web3-fixed = python.pkgs.web3.override {
+    # TODO: Check how IPFS is used, and whether it works on macOS
+    ipfshttpclient = python.pkgs.ipfshttpclient.overridePythonAttrs {
+      meta.broken = false;
+    };
+  };
+  cairo-lang = python.pkgs.buildPythonPackage {
+    pname = "cairo-lang";
+    src = pkgs.fetchzip {
+      url = "https://github.com/starkware-libs/cairo-lang/releases/download/v${lock.cairo-lang.version}/cairo-lang-${lock.cairo-lang.version}.zip";
+      sha256 = lock.cairo-lang.sha256;
+    };
+    version = lock.cairo-lang.version;
+    nativeBuildInputs = [ python.pkgs.pythonRelaxDepsHook ];
+    pythonRelaxDeps = [ "frozendict" ];
+    pythonRemoveDeps = [ "pytest" "pytest-asyncio" ];
+    doCheck = false;
+    buildInputs = [ pkgs.gmp ];
+    propagatedBuildInputs = with python.pkgs; ([
+      aiohttp cachetools setuptools ecdsa fastecdsa sympy mpmath
+      numpy typeguard frozendict prometheus-client marshmallow
+      marshmallow-enum marshmallow-dataclass marshmallow-oneofschema
+      pipdeptree lark eth-hash pyyaml web3-fixed
+    ] ++ eth-hash.optional-dependencies.pycryptodome);
+    postInstall = ''
+      chmod +x $out/bin/*
+    '';
+  };
+
 in
-{ inherit pkgs rust miden haskellPackages ghc starkify; }
+{ inherit pkgs rust miden haskellPackages ghc starkify cairo-lang; }

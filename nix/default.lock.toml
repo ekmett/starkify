@@ -9,3 +9,7 @@ sha256 = "05sk61p3a5dhqfiaz7w01fc5fphxhl9d1aizwbvgiw7g0hrbc4v8"
 [miden-vm]
 commit = "e49af675b589ab078f8ea8b63a9c0c1861c446d4"
 sha256 = "sha256-6VL9fRTbjfg/4MhYOtb5NzMnljQoMwzG73PVHuiwhJ0="
+
+[cairo-lang]
+version = "0.10.3"
+sha256 = "sha256-vr5jzruf6cnM94FHXtWeDCZ0Qm+EsDjIEgMNCOtWjTA="
