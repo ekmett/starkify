@@ -12,7 +12,7 @@
   ]
 }:
 let
-  rust = pkgs.rust-bin.stable."1.66.0".default;
+  rust = pkgs.rust-bin.stable."1.67.1".default;
   miden = pkgs.rustPlatform.buildRustPackage rec {
     pname = "miden";
     version = lock.miden-vm.commit;

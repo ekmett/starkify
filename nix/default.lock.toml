@@ -3,12 +3,12 @@ commit = "4d2b37a84fad1091b9de401eb450aae66f1a741e"
 sha256 = "11w3wn2yjhaa5pv20gbfbirvjq6i3m7pqrq2msf0g7cv44vijwgw"
 
 [rust-overlay]
-commit = "ede977678e5d0164316998487e686d0790744cd7"
-sha256 = "05sk61p3a5dhqfiaz7w01fc5fphxhl9d1aizwbvgiw7g0hrbc4v8"
+commit = "2924bfce2fadc1ded4a2b8cfce7f2fd4ef41c36f"
+sha256 = "sha256:0s1r10mgni3wq8wk1jjm7l9va2m3v2zf770rnd04mdx4ync8zkbg"
 
 [miden-vm]
-commit = "e49af675b589ab078f8ea8b63a9c0c1861c446d4"
-sha256 = "sha256-6VL9fRTbjfg/4MhYOtb5NzMnljQoMwzG73PVHuiwhJ0="
+commit = "985a7aff51fb98cebe3cd82b4371d14f9a3b8376"
+sha256 = "sha256-MN/LD2Z6VRHW+iXM722Fcmb/rLwGjSVYmxvPI+BySvw="
 
 [cairo-lang]
 version = "0.10.3"
