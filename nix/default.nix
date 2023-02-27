@@ -35,7 +35,7 @@ let
     nativeBuildInputs = [ rust ];
     doCheck = false;
   };
-  haskellPackages = pkgs.haskell.packages.ghc924.override {
+  haskellPackages = pkgs.haskell.packages.ghc926.override {
     overrides = self: super: {
       wasm = pkgs.haskell.lib.dontCheck (self.callHackage "wasm" "1.1.1" {});
     };

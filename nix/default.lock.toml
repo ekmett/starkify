@@ -1,6 +1,6 @@
 [nixpkgs]
-commit = "4d2b37a84fad1091b9de401eb450aae66f1a741e"
-sha256 = "11w3wn2yjhaa5pv20gbfbirvjq6i3m7pqrq2msf0g7cv44vijwgw"
+commit = "addae2044494e1fd3acf5c1684f4fc967406961d"
+sha256 = "sha256:1jxz25hk4c63ji0gzzp09ci3z2pj9577jb3bpv3a6h81wflzd87b"
 
 [rust-overlay]
 commit = "2924bfce2fadc1ded4a2b8cfce7f2fd4ef41c36f"
