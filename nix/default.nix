@@ -12,7 +12,7 @@
   ]
 }:
 let
-  rust = pkgs.rust-bin.stable."1.66.0".default;
+  rust = pkgs.rust-bin.stable."1.67.1".default;
   miden = pkgs.rustPlatform.buildRustPackage rec {
     pname = "miden";
     version = lock.miden-vm.commit;
@@ -35,7 +35,7 @@ let
     nativeBuildInputs = [ rust ];
     doCheck = false;
   };
-  haskellPackages = pkgs.haskell.packages.ghc924.override {
+  haskellPackages = pkgs.haskell.packages.ghc926.override {
     overrides = self: super: {
       wasm = pkgs.haskell.lib.dontCheck (self.callHackage "wasm" "1.1.1" {});
     };
