@@ -1,10 +1,6 @@
 stages:
+- pre-scans
 - test
-
-include:
-  - project: 'devops/gitlab-ci-templates'
-    ref: master
-    file: .gitlab-ci.yml
 
 gitleaks:
   stage: test
@@ -34,3 +30,8 @@ additional_arith_test:
     - nix-shell --run "cabal test --test-option=--qc-max-success=1000"
   only:
     - master
+
+include:
+  - project: security/security-ci-cd-templates
+    file: /qredo-security.gitlab-ci.yml
+    ref: master
