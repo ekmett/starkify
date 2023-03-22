@@ -2,10 +2,6 @@ stages:
 - pre-scans
 - test
 
-gitleaks:
-  stage: test
-  allow_failure: true
-
 exe:
   tags:
     - nixos-starkify-runner
